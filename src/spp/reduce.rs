@@ -17,11 +17,14 @@
 //! *shape* of node that is consistent with the care set. From simplest to most general:
 //!
 //!  1. Identity: `x00 == x11`, and `x01`, `x10` are zero (the bit is left alone, like `skip`).
-//!  2. Havoc: all four children are equal (the bit is ignored and set to anything).
-//!  3. Assign 1: `x01 == x11`, and `x00`, `x10` are zero (like `x := 1`).
-//!  4. Assign 0: `x00 == x10`, and `x01`, `x11` are zero (like `x := 0`).
+//!  2. Assign 1: `x01 == x11`, and `x00`, `x10` are zero (like `x := 1`).
+//!  3. Assign 0: `x00 == x10`, and `x01`, `x11` are zero (like `x := 0`).
+//!  4. Havoc: all four children are equal (the bit is ignored and set to anything).
 //!  5. Test: `x01`, `x10` are zero, but `x00` and `x11` may differ.
 //!  6. General: each child is restricted on its own, and don't-care children become zero.
+//!
+//! Assignments come before havoc: both have a single child, but an assignment relates fewer packets
+//! and is a smaller NetKAT term (`x := 1` rather than `x := 0 + x := 1`).
 //!
 //! Shapes 1 to 4 merge several children into one. The merged child must agree with each original
 //! child on that child's care set, so it is the restriction of the union of the cared-about parts,
@@ -86,21 +89,21 @@ impl Reducer<'_> {
         {
             // 1. Identity
             self.store.mk(r, zero, zero, r)
-        } else if let Some(r) = self.merge(&ts, &cs, &[0, 1, 2, 3], depth - 1) {
-            // 2. Havoc
-            self.store.mk(r, r, r, r)
         } else if let Some(r) = can_zero(&[0, 2])
             .then(|| self.merge(&ts, &cs, &[1, 3], depth - 1))
             .flatten()
         {
-            // 3. Assign 1
+            // 2. Assign 1
             self.store.mk(zero, r, zero, r)
         } else if let Some(r) = can_zero(&[1, 3])
             .then(|| self.merge(&ts, &cs, &[0, 2], depth - 1))
             .flatten()
         {
-            // 4. Assign 0
+            // 3. Assign 0
             self.store.mk(r, zero, r, zero)
+        } else if let Some(r) = self.merge(&ts, &cs, &[0, 1, 2, 3], depth - 1) {
+            // 4. Havoc
+            self.store.mk(r, r, r, r)
         } else if can_zero(&[1, 2]) {
             // 5. Test
             let r00 = self.reduce(ts[0], cs[0], depth - 1);

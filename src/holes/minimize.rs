@@ -1,13 +1,15 @@
 //! Minimize -- heuristically minimize netkat automata.
 //!
-//! This has three parts:
+//! This has four parts:
 //!
 //!  1. Identify conflicts
 //!  2. Graph coloring
 //!  3. Merge the states!
+//!  4. Simplify the edges, alternating between [`reduce_forward`] and [`reduce_backward`]. The
+//!     edges may then overlap, so the result is an NFA.
 
 use crate::expr::{Exp, Expr};
-use crate::holes::aut::{self, DFA, ENFA, ExplicitDFA, NFA, ops};
+use crate::holes::aut::{self, DFA, ENFA, ExplicitDFA, ExplicitNFA, NFA, ops};
 use crate::sp;
 use crate::spp::{self, reduce};
 use petgraph::algo::{coloring, dominators, tarjan_scc};
@@ -198,7 +200,7 @@ fn split_colors(
 /// Each color becomes one state. For each incoming packet, the new state behaves like one of the
 /// old states of that color which that packet can reach (the first one, in state order). Since
 /// states of the same color are pairwise mergable, it doesn't matter which one we pick, and picking
-/// just one keeps the transitions disjoint.
+/// just one keeps the transitions disjoint, so the result is still a DFA.
 fn merge_states(
     dfa: &ExplicitDFA,
     reachable_sets: &HashMap<usize, sp::SP>,
@@ -251,20 +253,6 @@ fn merge_states(
             .collect();
         trans.sort_by_key(|&(_, target)| target);
 
-        // Simplify the edges and output: only packets that reach this state matter.
-        //
-        // To keep the edges disjoint (so this is still a DFA), each edge must also be zero wherever
-        // an earlier (already simplified) edge is nonzero. Later edges need no special treatment:
-        // they are nonzero only on reaching packets, where every edge is kept exact.
-        let care = store.ibwd(covered);
-        let mut taken = store.zero;
-        for (spp, _) in &mut trans {
-            let edge_care = store.union(care, taken);
-            *spp = reduce::reduce(store, *spp, edge_care);
-            taken = store.union(taken, *spp);
-        }
-        let output = reduce::reduce(store, output, care);
-
         transitions.push(trans);
         outputs.push(output);
     }
@@ -276,9 +264,99 @@ fn merge_states(
     }
 }
 
-pub fn minimize(dfa: &ExplicitDFA, store: &mut spp::SPPstore) -> ExplicitDFA {
+/// Step 4a -- simplify each edge and output, keeping only what matters for packets that reach it.
+///
+/// An edge out of `q` (and the output of `q`) only ever sees packets that reach `q`, so it can be
+/// anything on other input packets. We [`reduce`](reduce::reduce) it with that don't-care set.
+///
+/// This preserves the language, and no packet reaches a state it didn't before: by induction along a
+/// run, every packet reaching `q` is one the edges out of `q` are kept exact on.
+pub fn reduce_forward(nfa: &ExplicitNFA, store: &mut spp::SPPstore) -> ExplicitNFA {
+    let reachable = aut::compute_reachable(nfa, store);
+    let care: Vec<spp::SPP> = (0..nfa.num_states())
+        .map(|q| {
+            let reach_q = reachable.get(&q).copied().unwrap_or(store.sp.zero);
+            store.ibwd(reach_q)
+        })
+        .collect();
+
+    let zero = store.zero;
+    let transitions = (0..nfa.num_states())
+        .map(|q| {
+            nfa.transitions[q]
+                .iter()
+                .map(|&(spp, next)| (reduce::reduce(store, spp, care[q]), next))
+                .filter(|&(spp, _)| spp != zero)
+                .collect()
+        })
+        .collect();
+    let outputs = (0..nfa.num_states())
+        .map(|q| reduce::reduce(store, nfa.outputs[q], care[q]))
+        .collect();
+
+    ExplicitNFA {
+        start: nfa.start,
+        transitions,
+        outputs,
+    }
+}
+
+/// Step 4b -- the mirror image of [`reduce_forward`]: simplify each edge, keeping only what matters
+/// for packets that go on to be accepted.
+///
+/// An edge into `r` only matters for the packets it produces that co-reach `r` (can go on from `r` to
+/// be accepted), so it can be anything on other output packets. The outputs are left alone: they
+/// are where acceptance happens, like the start state is where [`reduce_forward`]'s runs begin.
+///
+/// This preserves the language, and no packet co-reaches a state it didn't before: by induction
+/// along a run (backwards from acceptance), every edge it takes is one kept exact on its packets.
+pub fn reduce_backward(nfa: &ExplicitNFA, store: &mut spp::SPPstore) -> ExplicitNFA {
+    let coreachable = aut::compute_coreachable(nfa, store);
+    let care: Vec<spp::SPP> = (0..nfa.num_states())
+        .map(|r| {
+            let coreach_r = coreachable.get(&r).copied().unwrap_or(store.sp.zero);
+            store.ifwd(coreach_r)
+        })
+        .collect();
+
+    let zero = store.zero;
+    let transitions = (0..nfa.num_states())
+        .map(|q| {
+            nfa.transitions[q]
+                .iter()
+                .map(|&(spp, next)| (reduce::reduce(store, spp, care[next]), next))
+                .filter(|&(spp, _)| spp != zero)
+                .collect()
+        })
+        .collect();
+
+    ExplicitNFA {
+        start: nfa.start,
+        transitions,
+        outputs: nfa.outputs.clone(),
+    }
+}
+
+/// How many rounds of [`reduce_forward`] and [`reduce_backward`] [`minimize`] does at most. Each
+/// round can shrink the reachability or co-reachability sets, which lets the next round simplify
+/// further.
+const REDUCE_ROUNDS: usize = 4;
+
+/// Heuristically minimize a DFA: merge compatible states, then simplify the edges.
+///
+/// The result is an NFA, since simplifying the edges can make them overlap.
+pub fn minimize(dfa: &ExplicitDFA, store: &mut spp::SPPstore) -> ExplicitNFA {
     let reachable = aut::compute_reachable(dfa, store);
-    merge_states(dfa, &reachable, store)
+    let mut nfa = ExplicitNFA::from(merge_states(dfa, &reachable, store));
+    for _ in 0..REDUCE_ROUNDS {
+        let forward = reduce_forward(&nfa, store);
+        let next = reduce_backward(&forward, store);
+        if next == nfa {
+            break;
+        }
+        nfa = next;
+    }
+    nfa
 }
 
 /// Convert a DFA to an equivalent NetKAT expression: [`minimize`] it, then use [`to_expr_tarjan`].
@@ -292,18 +370,18 @@ pub fn to_expr(dfa: &ExplicitDFA, store: &mut spp::SPPstore) -> Exp {
     to_expr_tarjan(&small, store)
 }
 
-/// Convert a DFA to an equivalent NetKAT expression, by Kleene state elimination.
+/// Convert an NFA to an equivalent NetKAT expression, by Kleene state elimination.
 ///
-/// We build the edge-labelled NFA described in [`ExpNfa::from_dfa`], then eliminate the DFA's
+/// We build the edge-labelled NFA described in [`ExpNfa::from_nfa`], then eliminate the automaton's
 /// states one at a time, until only the edge from initial to final is left.
 ///
 /// States are eliminated greedily, picking the one that increases the number of edges the least.
 /// Eliminating `q` adds an edge for each (incoming, outgoing) pair, and removes the incoming,
 /// outgoing, and self-loop edges of `q`.
-pub fn to_expr_kleene(dfa: &ExplicitDFA, store: &mut spp::SPPstore) -> Exp {
-    let mut nfa = ExpNfa::from_dfa(dfa, store);
+pub fn to_expr_kleene(aut: &ExplicitNFA, store: &mut spp::SPPstore) -> Exp {
+    let mut nfa = ExpNfa::from_nfa(aut, store);
 
-    let mut remaining: BTreeSet<usize> = (0..dfa.num_states()).collect();
+    let mut remaining: BTreeSet<usize> = (0..aut.num_states()).collect();
     while let Some(q) = remaining
         .iter()
         .copied()
@@ -318,9 +396,9 @@ pub fn to_expr_kleene(dfa: &ExplicitDFA, store: &mut spp::SPPstore) -> Exp {
         .unwrap_or_else(Expr::zero)
 }
 
-/// Convert a DFA to an equivalent NetKAT expression, by Tarjan's path expression algorithm.
+/// Convert an NFA to an equivalent NetKAT expression, by Tarjan's path expression algorithm.
 ///
-/// We build the edge-labelled NFA described in [`ExpNfa::from_dfa`], and compute the path
+/// We build the edge-labelled NFA described in [`ExpNfa::from_nfa`], and compute the path
 /// expression from its initial state to its final state. Following Tarjan ("Fast algorithms for
 /// solving path problems", 1981), we use the dominator tree to split the problem into one small
 /// problem per node of the tree:
@@ -332,8 +410,8 @@ pub fn to_expr_kleene(dfa: &ExplicitDFA, store: &mut spp::SPPstore) -> Exp {
 ///   down the dominator tree.
 /// - `dpath` is computed for the children of each node `v` together, bottom-up (see
 ///   [`solve_siblings`]).
-pub fn to_expr_tarjan(dfa: &ExplicitDFA, store: &mut spp::SPPstore) -> Exp {
-    let nfa = ExpNfa::from_dfa(dfa, store);
+pub fn to_expr_tarjan(aut: &ExplicitNFA, store: &mut spp::SPPstore) -> Exp {
+    let nfa = ExpNfa::from_nfa(aut, store);
     let num_nodes = nfa.edges.len();
 
     let mut graph: DiGraph<(), (), usize> = DiGraph::default();
@@ -513,18 +591,18 @@ struct ExpNfa {
 }
 
 impl ExpNfa {
-    /// A DFA transition `(spp, next)` means "apply `spp`, record the new packet in the trace, then
+    /// A transition `(spp, next)` means "apply `spp`, record the new packet in the trace, then
     /// continue from `next`", so each state `q` denotes
     ///
     /// ```text
     /// E_q = output_q + Σ spp; dup; E_next
     /// ```
     ///
-    /// So the NFA has the DFA's states, plus a fresh initial state with a `1` edge to the start
+    /// So the NFA has the automaton's states, plus a fresh initial state with a `1` edge to the start
     /// state, an edge `spp; dup` per transition, and an edge `output_q` from each state to a fresh
-    /// final state. The DFA denotes the sum of all paths from initial to final.
-    fn from_dfa(dfa: &ExplicitDFA, store: &mut spp::SPPstore) -> ExpNfa {
-        let n = dfa.num_states();
+    /// final state. The automaton denotes the sum of all paths from initial to final.
+    fn from_nfa(aut: &ExplicitNFA, store: &mut spp::SPPstore) -> ExpNfa {
+        let n = aut.num_states();
         let mut nfa = ExpNfa {
             edges: vec![BTreeMap::new(); n + 2],
             incoming: vec![BTreeSet::new(); n + 2],
@@ -532,13 +610,13 @@ impl ExpNfa {
             fin: n + 1,
         };
 
-        nfa.add_edge(nfa.initial, dfa.start, Expr::one());
+        nfa.add_edge(nfa.initial, aut.start, Expr::one());
         for q in 0..n {
-            for &(spp, next) in &dfa.transitions[q] {
+            for &(spp, next) in &aut.transitions[q] {
                 let label = Expr::sequence_simp(store.to_expr(spp), Expr::dup());
                 nfa.add_edge(q, next, label);
             }
-            let output = store.to_expr(dfa.outputs[q]);
+            let output = store.to_expr(aut.outputs[q]);
             nfa.add_edge(q, nfa.fin, output);
         }
         nfa
@@ -595,20 +673,25 @@ impl ExpNfa {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::holes::aut::SubsetDfa;
 
     /// True iff `a` and `b` accept exactly the same traces.
-    fn equivalent(store: &mut spp::SPPstore, a: &ExplicitDFA, b: &ExplicitDFA) -> bool {
+    fn equivalent(store: &mut spp::SPPstore, a: &ExplicitNFA, b: &ExplicitNFA) -> bool {
+        // Complementing needs a DFA, so determinize first
         let sym_diff = ops::union(
-            ops::intersection(a, ops::complement(b)),
-            ops::intersection(ops::complement(a), b),
+            ops::intersection(SubsetDfa::new(a), ops::complement(SubsetDfa::new(b))),
+            ops::intersection(ops::complement(SubsetDfa::new(a)), SubsetDfa::new(b)),
         );
         aut::is_empty(&sym_diff, store)
     }
 
-    type ToExpr = fn(&ExplicitDFA, &mut spp::SPPstore) -> Exp;
+    fn to_nfa(dfa: &ExplicitDFA) -> ExplicitNFA {
+        ExplicitNFA::from(dfa.clone())
+    }
 
-    /// Round trip `expr -> DFA -> (minimize?) -> expr -> DFA`, and check the language is preserved.
-    fn fuzz_to_expr(seed: u64, do_minimize: bool, to_expr: ToExpr) {
+    /// Round trip `expr -> DFA -> expr -> DFA` using `to_expr`, and check the language is
+    /// preserved.
+    fn fuzz_to_expr(seed: u64, to_expr: impl Fn(&ExplicitDFA, &mut spp::SPPstore) -> Exp) {
         crate::fuzz::seed_fuzzer(seed);
         let expr_depth = 3;
         let num_fields = 2;
@@ -617,16 +700,11 @@ mod tests {
             let (expr, _) = crate::fuzz::genax(0, expr_depth, num_fields);
             let mut store = spp::SPPstore::new(num_fields);
             let dfa = aut::expr_to_dfa(&expr, &mut store);
-            let dfa = if do_minimize {
-                minimize(&dfa, &mut store)
-            } else {
-                dfa
-            };
 
             let back = to_expr(&dfa, &mut store);
             let dfa_back = aut::expr_to_dfa(&back, &mut store);
             assert!(
-                equivalent(&mut store, &dfa, &dfa_back),
+                equivalent(&mut store, &to_nfa(&dfa), &to_nfa(&dfa_back)),
                 "to_expr changed the language on trial {trial}\n  expr: {expr}\n  back: {back}"
             );
         }
@@ -634,27 +712,37 @@ mod tests {
 
     #[test]
     fn fuzz_to_expr_roundtrip() {
-        fuzz_to_expr(0x5EED_0015, false, to_expr);
+        fuzz_to_expr(0x5EED_0015, to_expr);
     }
 
     #[test]
     fn fuzz_to_expr_kleene_roundtrip() {
-        fuzz_to_expr(0x5EED_0011, false, to_expr_kleene);
+        fuzz_to_expr(0x5EED_0011, |dfa, store| {
+            to_expr_kleene(&to_nfa(dfa), store)
+        });
     }
 
     #[test]
     fn fuzz_minimize_to_expr_kleene_roundtrip() {
-        fuzz_to_expr(0x5EED_0012, true, to_expr_kleene);
+        fuzz_to_expr(0x5EED_0012, |dfa, store| {
+            let small = minimize(dfa, store);
+            to_expr_kleene(&small, store)
+        });
     }
 
     #[test]
     fn fuzz_to_expr_tarjan_roundtrip() {
-        fuzz_to_expr(0x5EED_0013, false, to_expr_tarjan);
+        fuzz_to_expr(0x5EED_0013, |dfa, store| {
+            to_expr_tarjan(&to_nfa(dfa), store)
+        });
     }
 
     #[test]
     fn fuzz_minimize_to_expr_tarjan_roundtrip() {
-        fuzz_to_expr(0x5EED_0014, true, to_expr_tarjan);
+        fuzz_to_expr(0x5EED_0014, |dfa, store| {
+            let small = minimize(dfa, store);
+            to_expr_tarjan(&small, store)
+        });
     }
 
     #[test]
@@ -676,21 +764,48 @@ mod tests {
                 "minimize grew the automaton on trial {trial} for expr {expr}"
             );
             assert!(
-                equivalent(store, &dfa, &small),
+                equivalent(store, &to_nfa(&dfa), &small),
                 "minimize changed the language on trial {trial} for expr {expr}"
             );
-            for (q, trans) in small.transitions.iter().enumerate() {
-                for (i, &(a, _)) in trans.iter().enumerate() {
-                    for &(b, _) in &trans[..i] {
-                        assert_eq!(
-                            store.intersect(a, b),
-                            store.zero,
-                            "overlapping edges out of state {q} on trial {trial} for expr {expr}"
-                        );
-                    }
-                }
-            }
         }
+    }
+
+    /// Each reduce pass on its own preserves the language.
+    #[test]
+    fn fuzz_reduce_passes_preserve_language() {
+        crate::fuzz::seed_fuzzer(0x5EED_0016);
+        for trial in 0..300 {
+            let (expr, _) = crate::fuzz::genax(0, 4, 3);
+            let mut store = spp::SPPstore::new(3);
+            let nfa = to_nfa(&aut::expr_to_dfa(&expr, &mut store));
+
+            let forward = reduce_forward(&nfa, &mut store);
+            assert!(
+                equivalent(&mut store, &nfa, &forward),
+                "reduce_forward changed the language on trial {trial} for expr {expr}"
+            );
+            let backward = reduce_backward(&nfa, &mut store);
+            assert!(
+                equivalent(&mut store, &nfa, &backward),
+                "reduce_backward changed the language on trial {trial} for expr {expr}"
+            );
+        }
+    }
+
+    /// The solution `nksynth --full` finds for `examples/chained_dup.nksynth`: after the backward
+    /// pass sees that only `x0 = 1` is accepted, the havoc becomes an assignment, and then the
+    /// forward pass sees that the test always passes.
+    #[test]
+    fn minimize_simplifies_havoc_then_test() {
+        let expr = crate::parser::Parser::new(crate::parser::Lexer::new(
+            "(x0 := 0 + x0 := 1); dup; x0 == 1",
+        ))
+        .parse_single_expression()
+        .unwrap();
+        let mut store = spp::SPPstore::new(1);
+        let dfa = aut::expr_to_dfa(&expr, &mut store);
+        let simplified = to_expr(&dfa, &mut store);
+        assert_eq!(crate::printer::pretty(&simplified), "x0 := 1; dup");
     }
 
     /// Number of nodes in the syntax tree of `e`.
@@ -709,6 +824,8 @@ mod tests {
             _ => 1,
         }
     }
+
+    type ToExpr = fn(&ExplicitNFA, &mut spp::SPPstore) -> Exp;
 
     /// Does converting to an expression give smaller results after minimizing?
     ///
@@ -733,6 +850,7 @@ mod tests {
                 let mut store = spp::SPPstore::new(num_fields);
                 let dfa = aut::expr_to_dfa(&expr, &mut store);
                 let small = minimize(&dfa, &mut store);
+                let dfa = to_nfa(&dfa);
                 states[0] += dfa.num_states();
                 states[1] += small.num_states();
 
