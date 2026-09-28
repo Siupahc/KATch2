@@ -1334,6 +1334,16 @@ pub fn is_empty<A: ENFA>(aut: &A, store: &mut spp::SPPstore) -> bool {
     is_empty_with_reachable(aut, store, &mut HashMap::new())
 }
 
+/// Returns the set of reaching packets for each state.
+///
+/// Returns the map `reachable` where `reachable[q]` has a packet `pk` if there's a path that begins
+/// with some start packet at the start state and ends with `pk` at `q`
+pub fn compute_reachable<A: ENFA>(aut: &A, store: &mut spp::SPPstore) -> HashMap<A::State, sp::SP> {
+    let mut reachable = HashMap::new();
+    traverse_reachable(aut, store, &mut reachable, |_, _, _, _| false);
+    reachable
+}
+
 /// Same as [`is_empty`], but also populates `reachable` with a map from each
 /// visited state to the SP of packets that have been verified to reach it.
 ///
@@ -1345,6 +1355,20 @@ pub fn is_empty_with_reachable<A: ENFA>(
     aut: &A,
     store: &mut spp::SPPstore,
     reachable: &mut HashMap<A::State, sp::SP>,
+) -> bool {
+    traverse_reachable(aut, store, reachable, |aut, store, q, diff| {
+        let output_spp = aut.output(store, q);
+        store.push(diff, output_spp) != store.sp.zero
+    })
+}
+
+/// Visit each newly reachable packet set, stopping when `should_stop` returns true.
+/// Returns true only when traversal reaches a fixed point.
+fn traverse_reachable<A: ENFA>(
+    aut: &A,
+    store: &mut spp::SPPstore,
+    reachable: &mut HashMap<A::State, sp::SP>,
+    mut should_stop: impl FnMut(&A, &mut spp::SPPstore, &A::State, sp::SP) -> bool,
 ) -> bool {
     let q_start = aut.start(store);
     let mut todo: HashMap<A::State, sp::SP> = HashMap::new();
@@ -1365,9 +1389,7 @@ pub fn is_empty_with_reachable<A: ENFA>(
             continue;
         }
 
-        let output_spp = aut.output(store, &q);
-        let output_sp = store.push(diff, output_spp);
-        if output_sp != store.sp.zero {
+        if should_stop(aut, store, &q, diff) {
             return false;
         }
 
@@ -2527,6 +2549,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn compute_reachable_continues_past_accepting_states() {
+        let mut store = spp::SPPstore::new(1);
+        let zero = store.zero;
+        let top = store.top;
+        let test_false = store.test(0, false);
+        let test_true = store.test(0, true);
+        let dfa = ExplicitDFA {
+            start: 0,
+            transitions: vec![
+                vec![(test_false, 1), (test_true, 2), (zero, 4)],
+                vec![(top, 3)],
+                vec![(top, 3)],
+                vec![(top, 3)],
+                vec![],
+            ],
+            outputs: vec![top, zero, zero, zero, zero],
+        };
+
+        let reachable = compute_reachable(&dfa, &mut store);
+        let false_packets = store.sp.singleton(&[false]);
+        let true_packets = store.sp.singleton(&[true]);
+        assert_eq!(reachable.len(), 4);
+        assert_eq!(reachable[&0], store.sp.one);
+        assert_eq!(reachable[&1], false_packets);
+        assert_eq!(reachable[&2], true_packets);
+        assert_eq!(reachable[&3], store.sp.one);
+        assert!(!reachable.contains_key(&4));
+
+        let mut partial = HashMap::new();
+        assert!(!is_empty_with_reachable(&dfa, &mut store, &mut partial));
+        assert!(partial.is_empty());
+
+        let empty_dfa = ExplicitDFA {
+            outputs: vec![zero; 5],
+            ..dfa
+        };
+        assert!(is_empty_with_reachable(
+            &empty_dfa,
+            &mut store,
+            &mut partial
+        ));
+        assert_eq!(partial, reachable);
     }
 
     // ── backward_reachable ────────────────────────────────────────────────

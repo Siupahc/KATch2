@@ -112,6 +112,7 @@ pub type AbstractPacket = Vec<AbstractBit>;
 ///
 /// `polarity = true` means "the input is a member"; `false` means "not a
 /// member".
+#[derive(Clone, Debug)]
 pub enum Literal {
     /// A membership literal over an [`SppVar`]: is the pair `(ap1, ap2)` in the
     /// SPP?
@@ -139,6 +140,7 @@ pub enum Literal {
 }
 
 /// A disjunction of literals.  Literals may target a mix of SPP and Cand slots.
+#[derive(Clone, Debug)]
 pub struct AbstractClause {
     pub literals: Vec<Literal>,
 }
@@ -321,6 +323,8 @@ impl<'a> SmtLearner<'a> for Z3<'a> {
     /// changing its meaning.
     fn add_clause(&mut self, clause: AbstractClause, sp_store: &mut SPstore) {
         let n = self.num_vars as usize;
+
+        // println!("Adding clause: {clause:?}");
 
         // Split set-stated membership disjuncts from the rest so they can be
         // collated before existentialization.

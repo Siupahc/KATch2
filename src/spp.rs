@@ -4,9 +4,11 @@
 // each path down the BDD has precisely the same depth, namely the number of variables, i.e. the packet size in bits.
 
 pub mod learner;
+pub mod reduce;
 
 use rand::seq::SliceRandom;
 
+use crate::expr::{Exp, Expr};
 use crate::sp::{SP, SPnode, SPstore};
 use std::collections::HashMap;
 
@@ -192,7 +194,7 @@ impl SPPstore {
     }
 
     /// Computes the SPP corresponding to the `sp` returned by `fwd`.     
-    /// - `ifwd` is the right inverse of `fwd`, i.e. `fwd ∘ ifwd = id_SP`
+    /// - `ifwd` is a right inverse of `fwd`, i.e. `fwd ∘ ifwd = id_SP`
     pub fn ifwd(&mut self, sp: SP) -> SPP {
         // Check the memo table to see if ifwd(spp) already exists
         if let Some(&result) = self.ifwd_memo.get(&sp) {
@@ -210,7 +212,7 @@ impl SPPstore {
     }
 
     /// Computes the SPP corresponding to the `sp` returned by `bwd`.
-    /// - `ibwd` is the left inverse of `bwd`, i.e. `ibwd ∘ bwd = id`
+    /// - `ibwd` is a left inverse of `bwd`, i.e. `ibwd ∘ bwd = id`
     pub fn ibwd(&mut self, sp: SP) -> SPP {
         let spp = self.ifwd(sp);
         self.flip(spp)
@@ -518,6 +520,99 @@ impl SPPstore {
         res
     }
 
+    /// Converts an SPP to an equivalent (dup-free) NetKAT expression.
+    ///
+    /// Works top-down, one field at a time, with no sharing: the result may be exponentially larger
+    /// than the SPP.
+    pub fn to_expr(&mut self, spp: SPP) -> Exp {
+        self.build_expr(spp, 0)
+    }
+
+    /// Helper for [`to_expr`](Self::to_expr): `spp` relates fields `field..num_vars`.
+    fn build_expr(&mut self, spp: SPP, field: Var) -> Exp {
+        if field == self.num_vars {
+            return if spp == SPP::new(0) {
+                Expr::zero()
+            } else {
+                Expr::one()
+            };
+        }
+        if self.is_zero(spp) {
+            return Expr::zero();
+        }
+
+        let SPPnode { x00, x01, x10, x11 } = self.get(spp);
+        let [zero00, zero01, zero10, zero11] = [x00, x01, x10, x11].map(|x| self.is_zero(x));
+
+        // `field` is left alone
+        if x00 == x11 && zero01 && zero10 {
+            return self.build_expr(x00, field + 1);
+        }
+        // `field` is set to anything
+        if x00 == x01 && x00 == x10 && x00 == x11 {
+            let havoc = Expr::union(Expr::assign(field, false), Expr::assign(field, true));
+            let rest = self.build_expr(x00, field + 1);
+            return Expr::sequence_simp(havoc, rest);
+        }
+        // `field` is tested
+        if zero01 && zero10 {
+            return self.branch(field, x00, x11);
+        }
+        // `field` is assigned: every output has the same value
+        for (value, zero_other, if_false, if_true) in [
+            (true, zero00 && zero10, x01, x11),
+            (false, zero01 && zero11, x00, x10),
+        ] {
+            if !zero_other {
+                continue;
+            }
+            let assign = Expr::assign(field, value);
+            return if if_false == if_true {
+                let rest = self.build_expr(if_false, field + 1);
+                Expr::sequence_simp(assign, rest)
+            } else {
+                // Which fields come next depends on the input value of `field`
+                let branch = self.branch(field, if_false, if_true);
+                Expr::sequence(branch, assign)
+            };
+        }
+
+        // General case: a sum over the (input, output) values of `field`
+        let mut result = Expr::zero();
+        for (input, output, child) in [
+            (false, false, x00),
+            (false, true, x01),
+            (true, false, x10),
+            (true, true, x11),
+        ] {
+            let rest = self.build_expr(child, field + 1);
+            if *rest == Expr::Zero {
+                continue;
+            }
+            let mut prefix = Expr::test(field, input);
+            if input != output {
+                prefix = Expr::sequence(prefix, Expr::assign(field, output));
+            }
+            result = Expr::union_simp(result, Expr::sequence_simp(prefix, rest));
+        }
+        result
+    }
+
+    /// Helper for [`to_expr`](Self::to_expr): `(field == 0; if_false) + (field == 1; if_true)`,
+    /// where `if_false` and `if_true` relate fields `field + 1..num_vars`.
+    fn branch(&mut self, field: Var, if_false: SPP, if_true: SPP) -> Exp {
+        let rest_false = self.build_expr(if_false, field + 1);
+        let rest_true = self.build_expr(if_true, field + 1);
+        let mut result = Expr::zero();
+        for (value, rest) in [(false, rest_false), (true, rest_true)] {
+            if *rest != Expr::Zero {
+                result =
+                    Expr::union_simp(result, Expr::sequence_simp(Expr::test(field, value), rest));
+            }
+        }
+        result
+    }
+
     /// Computes all packets that can be produced from this SPP.
     /// We give the answer as an SPP instead of an SP for convenience.
     /// **Note**: this method has been deprecated in favor of `fwd`
@@ -713,6 +808,52 @@ mod tests {
     use super::*;
 
     const N: Var = 2;
+
+    /// Check that compiling `to_expr(spp)` gives back `spp`
+    fn check_to_expr_roundtrip(aut: &mut crate::aut::Aut, spp: SPP) {
+        let expr = aut.spp_store_mut().to_expr(spp);
+        let state = aut.expr_to_state(&expr);
+        assert_eq!(aut.epsilon(state), spp, "to_expr({spp}) = {expr}");
+    }
+
+    #[test]
+    fn test_to_expr_exhaustive() {
+        let mut aut = crate::aut::Aut::new(N);
+        let all = aut.spp_store_mut().all();
+        for spp in all {
+            check_to_expr_roundtrip(&mut aut, spp);
+        }
+    }
+
+    #[test]
+    fn test_to_expr_random() {
+        let mut aut = crate::aut::Aut::new(4);
+        for _ in 0..200 {
+            let spp = aut.spp_store_mut().rand();
+            check_to_expr_roundtrip(&mut aut, spp);
+        }
+    }
+
+    #[test]
+    fn test_to_expr_simple() {
+        let mut s = SPPstore::new(3);
+        assert_eq!(*s.to_expr(s.zero), Expr::Zero);
+        assert_eq!(*s.to_expr(s.one), Expr::One);
+        let t = s.test(1, true);
+        assert_eq!(s.to_expr(t), Expr::test(1, true));
+        let a = s.assign(2, false);
+        assert_eq!(s.to_expr(a), Expr::assign(2, false));
+        // A test that only lets one value through
+        let t0 = s.test(0, false);
+        let t0_a2 = s.sequence(t0, a);
+        let expected = Expr::sequence(Expr::test(0, false), Expr::assign(2, false));
+        assert_eq!(s.to_expr(t0_a2), expected);
+        // An assignment after a test on the same field
+        let a0 = s.assign(0, true);
+        let t0_a0 = s.sequence(t0, a0);
+        let expected = Expr::sequence(Expr::test(0, false), Expr::assign(0, true));
+        assert_eq!(s.to_expr(t0_a0), expected);
+    }
 
     /// Test that `naive_forward` and `fwd` behave the same
     #[test]
