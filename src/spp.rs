@@ -8,7 +8,7 @@ pub mod reduce;
 
 use rand::seq::SliceRandom;
 
-use crate::expr::{Exp, Expr};
+use crate::expr::Exp;
 use crate::sp::{SP, SPnode, SPstore};
 use std::collections::HashMap;
 
@@ -68,6 +68,9 @@ pub struct SPPstore {
     pub sp: SPstore,
     fwd_memo: HashMap<SPP, SP>,
     ifwd_memo: HashMap<SP, SPP>,
+
+    /// `zeros[d]` is the zero SPP on `d` fields (the empty relation at depth `d`)
+    zeros: Vec<SPP>,
 }
 
 /// A node in the SPP store. Has four children, one for each combination of the two variables.
@@ -135,6 +138,7 @@ impl SPPstore {
             // in the memo tables, we only want the base cases for 0 and 1
             fwd_memo: HashMap::from([(SPP::new(0), SP::new(0)), (SPP::new(1), SP::new(1))]),
             ifwd_memo: HashMap::from([(SP::new(0), SPP::new(0)), (SP::new(1), SPP::new(1))]),
+            zeros: vec![],
         };
         store.zero = store.zero();
         store.one = store.one();
@@ -260,12 +264,21 @@ impl SPPstore {
     }
 
     fn zero(&mut self) -> SPP {
-        // We must construct a zero SPP of the right depth
+        // We must construct a zero SPP of the right depth. Along the way, fill in `zeros` with the
+        // zero SPP of every depth.
         let mut spp = SPP::new(0);
+        self.zeros = vec![spp];
         for _ in 0..self.num_vars {
             spp = self.mk(spp, spp, spp, spp);
+            self.zeros.push(spp);
         }
         spp
+    }
+
+    /// The zero SPP (the empty relation) on `depth` fields, i.e. at the level of a node for field
+    /// `num_vars - depth`. `zero_at_depth(num_vars)` is `self.zero`.
+    pub fn zero_at_depth(&self, depth: Var) -> SPP {
+        self.zeros[depth as usize]
     }
     fn top(&mut self) -> SPP {
         // We must construct a top SPP of the right depth
@@ -522,95 +535,13 @@ impl SPPstore {
 
     /// Converts an SPP to an equivalent (dup-free) NetKAT expression.
     ///
-    /// Works top-down, one field at a time, with no sharing: the result may be exponentially larger
-    /// than the SPP.
+    /// Case-splits on one field at a time, choosing the field with
+    /// [`SplitHeuristic::Lookahead(1)`](reduce::SplitHeuristic::Lookahead): in simple testing (the
+    /// `split_heuristics_compared` test), this gave most of the benefit of trying every split order,
+    /// for a small constant factor more time than the entropy heuristic alone. There is no sharing,
+    /// so the result may be exponentially larger than the SPP.
     pub fn to_expr(&mut self, spp: SPP) -> Exp {
-        self.build_expr(spp, 0)
-    }
-
-    /// Helper for [`to_expr`](Self::to_expr): `spp` relates fields `field..num_vars`.
-    fn build_expr(&mut self, spp: SPP, field: Var) -> Exp {
-        if field == self.num_vars {
-            return if spp == SPP::new(0) {
-                Expr::zero()
-            } else {
-                Expr::one()
-            };
-        }
-        if self.is_zero(spp) {
-            return Expr::zero();
-        }
-
-        let SPPnode { x00, x01, x10, x11 } = self.get(spp);
-        let [zero00, zero01, zero10, zero11] = [x00, x01, x10, x11].map(|x| self.is_zero(x));
-
-        // `field` is left alone
-        if x00 == x11 && zero01 && zero10 {
-            return self.build_expr(x00, field + 1);
-        }
-        // `field` is set to anything
-        if x00 == x01 && x00 == x10 && x00 == x11 {
-            let havoc = Expr::union(Expr::assign(field, false), Expr::assign(field, true));
-            let rest = self.build_expr(x00, field + 1);
-            return Expr::sequence_simp(havoc, rest);
-        }
-        // `field` is tested
-        if zero01 && zero10 {
-            return self.branch(field, x00, x11);
-        }
-        // `field` is assigned: every output has the same value
-        for (value, zero_other, if_false, if_true) in [
-            (true, zero00 && zero10, x01, x11),
-            (false, zero01 && zero11, x00, x10),
-        ] {
-            if !zero_other {
-                continue;
-            }
-            let assign = Expr::assign(field, value);
-            return if if_false == if_true {
-                let rest = self.build_expr(if_false, field + 1);
-                Expr::sequence_simp(assign, rest)
-            } else {
-                // Which fields come next depends on the input value of `field`
-                let branch = self.branch(field, if_false, if_true);
-                Expr::sequence(branch, assign)
-            };
-        }
-
-        // General case: a sum over the (input, output) values of `field`
-        let mut result = Expr::zero();
-        for (input, output, child) in [
-            (false, false, x00),
-            (false, true, x01),
-            (true, false, x10),
-            (true, true, x11),
-        ] {
-            let rest = self.build_expr(child, field + 1);
-            if *rest == Expr::Zero {
-                continue;
-            }
-            let mut prefix = Expr::test(field, input);
-            if input != output {
-                prefix = Expr::sequence(prefix, Expr::assign(field, output));
-            }
-            result = Expr::union_simp(result, Expr::sequence_simp(prefix, rest));
-        }
-        result
-    }
-
-    /// Helper for [`to_expr`](Self::to_expr): `(field == 0; if_false) + (field == 1; if_true)`,
-    /// where `if_false` and `if_true` relate fields `field + 1..num_vars`.
-    fn branch(&mut self, field: Var, if_false: SPP, if_true: SPP) -> Exp {
-        let rest_false = self.build_expr(if_false, field + 1);
-        let rest_true = self.build_expr(if_true, field + 1);
-        let mut result = Expr::zero();
-        for (value, rest) in [(false, rest_false), (true, rest_true)] {
-            if *rest != Expr::Zero {
-                result =
-                    Expr::union_simp(result, Expr::sequence_simp(Expr::test(field, value), rest));
-            }
-        }
-        result
+        reduce::to_expr_tree(self, spp, reduce::SplitHeuristic::Lookahead(1))
     }
 
     /// Computes all packets that can be produced from this SPP.
@@ -806,6 +737,7 @@ impl SPPstore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::expr::Expr;
 
     const N: Var = 2;
 
