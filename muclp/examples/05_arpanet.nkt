@@ -1,0 +1,53 @@
+// ARPANET (December 1969), the smallest network of the Topology Zoo, with the same model
+// as experiments/experiment.py, but without dup and with named fields.
+//
+//        USCB(2) ---- UCLA(3)          links:  SRI:1 <-> USCB:1    SRI:2 <-> UCLA:1
+//           \          /                        SRI:3 <-> UTAH:1    USCB:2 <-> UCLA:2
+//            \        /
+//             SRI(1) ---- UTAH(4)
+//
+// loc = current switch, dst = destination, port = current port, dir = 0 (incoming) / 1 (outgoing)
+
+field loc  3
+field dst  3
+field port 2
+field dir  1
+
+// cables: output (loc, port) -> input of the neighbour
+def topo =
+    (loc = 1; port = 1; dir = 1; loc := 2; port := 1; dir := 0) +
+    (loc = 2; port = 1; dir = 1; loc := 1; port := 1; dir := 0) +
+    (loc = 1; port = 2; dir = 1; loc := 3; port := 1; dir := 0) +
+    (loc = 3; port = 1; dir = 1; loc := 1; port := 2; dir := 0) +
+    (loc = 1; port = 3; dir = 1; loc := 4; port := 1; dir := 0) +
+    (loc = 4; port = 1; dir = 1; loc := 1; port := 3; dir := 0) +
+    (loc = 2; port = 2; dir = 1; loc := 3; port := 2; dir := 0) +
+    (loc = 3; port = 2; dir = 1; loc := 2; port := 2; dir := 0)
+
+// shortest-path forwarding: (switch, destination) -> output port
+def pol =
+    (loc = 1; dst = 2; dir = 0; port := 1; dir := 1) +
+    (loc = 1; dst = 3; dir = 0; port := 2; dir := 1) +
+    (loc = 1; dst = 4; dir = 0; port := 3; dir := 1) +
+    (loc = 2; dst = 1; dir = 0; port := 1; dir := 1) +
+    (loc = 2; dst = 3; dir = 0; port := 2; dir := 1) +
+    (loc = 2; dst = 4; dir = 0; port := 1; dir := 1) +
+    (loc = 3; dst = 1; dir = 0; port := 1; dir := 1) +
+    (loc = 3; dst = 2; dir = 0; port := 2; dir := 1) +
+    (loc = 3; dst = 4; dir = 0; port := 1; dir := 1) +
+    (loc = 4; dst = 1; dir = 0; port := 1; dir := 1) +
+    (loc = 4; dst = 2; dir = 0; port := 1; dir := 1) +
+    (loc = 4; dst = 3; dir = 0; port := 1; dir := 1)
+
+def net = (pol; topo)*
+
+// Without a filter
+member utah_to_uscb:        (loc=4, dst=2, port=0, dir=0) -> (loc=2, dst=2, port=1, dir=0) in net   // true: UTAH -> SRI -> USCB
+incl   uscb_isolated_from_sri: loc = 2; dst = 1; net; loc = 1 <= 0                                  // FALSE: USCB reaches SRI
+
+// With the filter found "by hand": at USCB, drop what goes to SRI
+def filter = !(loc = 2; dst = 1)
+def net_f  = (filter; pol; topo)*
+
+incl   blocked:             loc = 2; dst = 1; net_f; loc = 1 <= 0                                   // true
+member still_ok:            (loc=4, dst=2, port=0, dir=0) -> (loc=2, dst=2, port=1, dir=0) in net_f // true

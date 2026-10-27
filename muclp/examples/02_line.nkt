@@ -1,0 +1,17 @@
+// A line of 3 switches:   [1] --- [2] --- [3]
+// Every switch forwards to the right through its port 2; the cable arrives on port 1 of the next one.
+
+field sw 2     // current switch
+field pt 2     // current port
+
+def pol  = (sw = 1; pt := 2) + (sw = 2; pt := 2)                                      // forwarding
+def topo = (sw = 1; pt = 2; sw := 2; pt := 1) + (sw = 2; pt = 2; sw := 3; pt := 1)   // cables
+def net  = (pol; topo)*                                                               // any number of hops
+
+member through:  (sw=1, pt=0) -> (sw=3, pt=1) in net     // true: 1 -> 2 -> 3
+member back:     (sw=3, pt=1) -> (sw=1, pt=0) in net     // FALSE: packets never go back
+member middle:   (sw=1, pt=0) -> (sw=1, pt=2) in net     // FALSE: (1,2) only exists in the middle of a hop
+
+equiv summary:       sw = 1; pt = 0; net; sw = 3 === sw = 1; pt = 0; sw := 3; pt := 1   // true
+equiv summary_wrong: sw = 1; pt = 0; net         === sw = 1; pt = 0; sw := 3; pt := 1   // FALSE: 0 hops too
+incl  isolation:     sw = 3; net; sw = 1 <= 0                                           // true: 3 never reaches 1

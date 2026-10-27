@@ -1,0 +1,17 @@
+// A ring of 4 switches:  1 -> 2 -> 3 -> 4 -> 1  (so there is a loop).
+// Then the same ring with a filter that drops everything at switch 3.
+
+field sw 3
+
+def step = (sw = 1; sw := 2) + (sw = 2; sw := 3) + (sw = 3; sw := 4) + (sw = 4; sw := 1)
+def net  = step*
+
+member round:       (sw=1) -> (sw=4) in net                                          // true
+equiv  all_reached: sw = 1; net === sw = 1; (sw := 1 + sw := 2 + sw := 3 + sw := 4)  // true
+
+def filter = !(sw = 3)
+def net2   = (filter; step)*
+
+member cut:         (sw=1) -> (sw=4) in net2                                         // FALSE: stuck at 3
+equiv  with_filter: sw = 1; net2 === sw = 1; (sw := 1 + sw := 2 + sw := 3)          // true
+incl   never_4:     sw = 1; net2; sw = 4 <= 0                                        // true

@@ -1,0 +1,12 @@
+// A toggle: x goes from 0 to 1 and from 1 to 0, forever.
+// This example shows why star is a LEAST fixed point (=mu): with =nu, the loop
+// 0 -> 1 -> 0 -> ... would "justify" anything.
+
+field x 3      // values 0..7
+
+def p = (x = 0; x := 1) + (x = 1; x := 0)
+
+member reaches_1: (x=0) -> (x=1) in p*     // true
+member reaches_5: (x=0) -> (x=5) in p*     // FALSE: only 0 and 1 are ever seen
+member stays_7:   (x=7) -> (x=7) in p*     // true: zero steps
+equiv  star:      p* === 1 + p             // true: toggling twice goes back to the start

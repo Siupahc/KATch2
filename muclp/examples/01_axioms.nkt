@@ -1,0 +1,25 @@
+// Basic NetKAT laws, on two small fields.
+// Each "equiv" / "incl" line is a separate check; the comment gives the expected answer.
+
+field f 2      // values 0..3
+field g 1      // values 0..1
+
+// --- tests and assignments
+equiv mod_then_test:  f := 1; f = 1 === f := 1            // true: after f := 1, the test f = 1 always passes
+equiv test_then_mod:  f = 1; f := 1 === f = 1             // true: if f is already 1, assigning it changes nothing
+equiv mod_mod:        f := 1; f := 2 === f := 2           // true: the second assignment overwrites the first
+equiv contradiction:  f = 1; f = 2 === 0                  // true: no packet has both f = 1 and f = 2
+equiv commute:        f := 1; g := 0 === g := 0; f := 1   // true: different fields, order does not matter
+equiv no_commute:     f := 1; f := 2 === f := 2; f := 1   // FALSE: same field, order matters
+equiv all_cases:      f = 0 + f = 1 + f = 2 + f = 3 === 1 // true, but ONLY because f has just 4 values
+
+// --- union and inclusion
+equiv union_idem:     f := 1 + f := 1 === f := 1          // true: p + p = p
+incl  filter_incl:    g = 0; f := 1 <= f := 1             // true: the left side does less
+incl  not_incl:       f := 1 <= g = 0; f := 1             // FALSE: the right side drops packets with g = 1
+
+// --- star
+def p = (f = 1; f := 2) + (f = 2; f := 3)
+equiv unfold:         p* === 1 + p; p*                    // true: the very definition of star
+equiv star_finite:    p* === 1 + p + p; p                 // true: at most 2 useful steps (1 -> 2 -> 3)
+equiv star_too_short: p* === 1 + p                        // FALSE: 1 -> 3 in two steps is missing

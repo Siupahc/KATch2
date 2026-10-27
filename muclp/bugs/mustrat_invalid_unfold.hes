@@ -1,0 +1,9 @@
+/* MuStrat (config mustrat.json, CoAR commit 59017e6) answers "invalid" reproducibly,
+   although the query is valid: Star1 => (body of Star1) holds for any fixed point.
+   MuVal (muval_parallel_exc_tbq_ar) does not conclude within 30 s. Comes from
+   examples/01_axioms.nkt, check "unfold" (p* === 1 + p; p*), naive encoding,
+   reduced to the left-to-right direction of the equivalence. */
+forall (i_f: int) (i_g: int) (o_f: int) (o_g: int). ((0 <= i_f /\ i_f <= 3) /\ (0 <= i_g /\ i_g <= 1) /\ (0 <= o_f /\ o_f <= 3) /\ (0 <= o_g /\ o_g <= 1)) => ((Star1 i_f i_g o_f o_g) => (((i_f = o_f) /\ (i_g = o_g)) \/ (exists (m4_f: int) (m4_g: int). ((exists (m5_f: int) (m5_g: int). (((i_f = m5_f) /\ (i_g = m5_g)) /\ (i_f = 1)) /\ ((m4_f = 2) /\ (m5_g = m4_g))) \/ (exists (m6_f: int) (m6_g: int). (((i_f = m6_f) /\ (i_g = m6_g)) /\ (i_f = 2)) /\ ((m4_f = 3) /\ (m6_g = m4_g)))) /\ (Star1 m4_f m4_g o_f o_g))))
+s.t.
+Star1 (i_f: int) (i_g: int) (o_f: int) (o_g: int): bool =mu
+  ((i_f = o_f) /\ (i_g = o_g)) \/ (exists (m1_f: int) (m1_g: int). ((exists (m2_f: int) (m2_g: int). (((i_f = m2_f) /\ (i_g = m2_g)) /\ (i_f = 1)) /\ ((m1_f = 2) /\ (m2_g = m1_g))) \/ (exists (m3_f: int) (m3_g: int). (((i_f = m3_f) /\ (i_g = m3_g)) /\ (i_f = 2)) /\ ((m1_f = 3) /\ (m3_g = m1_g)))) /\ (Star1 m1_f m1_g o_f o_g));
