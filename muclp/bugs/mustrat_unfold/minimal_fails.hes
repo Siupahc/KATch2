@@ -1,0 +1,5 @@
+/* Minimal failing case: the exists wraps a disjunction. MuStrat: invalid (wrong). */
+forall (x: int) (y: int). S x y => (x = y \/ (exists (m: int). ((x = 1 /\ m = 2) \/ (x = 2 /\ m = 3)) /\ S m y))
+s.t.
+S (x: int) (y: int): bool =mu
+  x = y \/ (exists (m: int). ((x = 1 /\ m = 2) \/ (x = 2 /\ m = 3)) /\ S m y);

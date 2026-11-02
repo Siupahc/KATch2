@@ -238,7 +238,7 @@ start-up); KATch2 times include process start-up.
 * KATch2 answers everywhere in ~0.02 s. MuVal costs at least ~0.13 s (start-up), up to ~3 s on
   equivalences with a star.
 * The `direct` encoding is clearly better: all of MuVal's timeouts are with `naive`.
-* MuStrat answers "invalid" on a valid query (`bugs/mustrat_invalid_unfold.hes`) and does not
+* MuStrat answers "invalid" on a valid query (`bugs/mustrat_unfold/`) and does not
   conclude on the ARPANET membership checks.
 
 ## 7. Not supported yet

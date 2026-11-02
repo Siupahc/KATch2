@@ -1,0 +1,5 @@
+// p* === 1 + p; p*  holds for EVERY p: it is the definition of star.
+// One field.
+field f 2
+def p = (f = 1; f := 2) + (f = 2; f := 3)
+equiv unfold: p* === 1 + p; p*
