@@ -5,13 +5,16 @@
 //! `&mut self`, but [`ENFA`]'s methods take `&self`; we bridge with a
 //! `RefCell`, the same trick `EpsilonClosure` uses for its memo table.
 
+use crate::hash::{HashMap, HashMapExt as _};
 use crate::holes::aut::{
     DFA, ENFA, EpsilonClosure, NFA, SubsetDfa, get_any_trace_with_states, ops,
 };
 use crate::holes::nk_with_holes::{AutWithHoles, EdgeLabel, Hole, State as OuterState};
 use crate::spp;
 use std::cell::RefCell;
-use std::collections::HashMap;
+
+mod upper;
+pub(crate) use upper::{upper_bound_forbidden, upper_bound_forbidden_cand};
 
 /// Witness produced by [`Instantiate::check_greater_than`] when the lower
 /// bound is not contained in the instantiated automaton.
@@ -27,6 +30,17 @@ pub struct LowerBoundCounterexample {
     pub trace: Vec<Vec<bool>>,
     /// Final output packet produced by the lower bound's output summand.
     pub output: Vec<bool>,
+}
+
+pub type HoleWitness<S> = (Hole, (Vec<bool>, Vec<(S, Vec<bool>)>, Vec<bool>));
+
+/// A violating path, including invisible states needed to recover the
+/// concrete context around a single SPP traversal.
+#[derive(Debug, Clone)]
+pub struct UpperBoundCounterexample<S> {
+    pub path: Vec<(State<S>, Vec<bool>)>,
+    pub output: Vec<bool>,
+    pub witnesses: Vec<HoleWitness<S>>,
 }
 
 /// An [`AutWithHoles`] plus a concrete NFA assignment for each hole that
@@ -96,28 +110,48 @@ impl<Inner: NFA> Instantiate<Inner> {
         store: &mut spp::SPPstore,
         upper_bound: &U,
     ) -> Result<(), Vec<(Hole, (Vec<bool>, Vec<(Inner::State, Vec<bool>)>, Vec<bool>))>> {
-        // Build the product NFA `self ∩ complement(upper_bound)`, extract a
-        // visible trace from it, elaborate the trace through the underlying
-        // `AutWithHoles` to recover invisible intermediates, then walk every
-        // transition and the final output to collect abstract labels.
-        let self_nfa = EpsilonClosure::new(self);
-        let complement_ub = ops::complement(upper_bound);
-        let product = ops::intersection(&self_nfa, &complement_ub);
+        self.check_upper_bound(store, upper_bound, &HashMap::new())
+            .map_err(|cex| cex.witnesses)
+    }
 
-        let Some((visible_path, output_pkt)) = get_any_trace_with_states(&product, store) else {
+    /// Like [`Self::check_less_than`], retaining the concrete path context.
+    /// Minimize paid hole traversals: known SPP pairs are free; entering an
+    /// internal Cand path costs one, and its remaining transitions are free.
+    /// Pass an empty map when no lower-bound information is available.
+    pub fn check_upper_bound<U: DFA>(
+        &self,
+        store: &mut spp::SPPstore,
+        upper: &U,
+        lower: &HashMap<Hole, spp::SPP>,
+    ) -> Result<(), UpperBoundCounterexample<Inner::State>> {
+        let result = crate::holes::aut::get_weighted_upper_bound_counterexample(
+            self,
+            upper,
+            store,
+            |source, label, target, store| {
+                if let State::Entering(hole, _) = source {
+                    if matches!(target, State::Outer(_)) {
+                        let sure = lower.get(hole).copied().unwrap_or(store.zero);
+                        let free = store.intersect(label, sure);
+                        let paid = store.difference(label, sure);
+                        vec![(free, false), (paid, true)]
+                    } else {
+                        vec![(label, true)]
+                    }
+                } else {
+                    vec![(label, false)]
+                }
+            },
+        );
+        let Some((path, output)) = result else {
             return Ok(());
         };
-        // Project onto the self-side state component.
-        let self_visible_path: Vec<(State<_>, Vec<bool>)> = visible_path
-            .into_iter()
-            .map(|((q_self, _q_ub), p)| (q_self, p))
-            .collect();
-
-        // Splice the invisible intermediates back in.
-        let full_path: Vec<(State<_>, Vec<bool>)> =
-            self_nfa.elaborate_trace(store, &self_visible_path, &output_pkt);
-
-        Err(self.holes_used_in_trace(store, &full_path, &output_pkt))
+        let witnesses = self.holes_used_in_trace(store, &path, &output);
+        Err(UpperBoundCounterexample {
+            path,
+            output,
+            witnesses,
+        })
     }
 
     /// Collect the holes used by a single trace through the inner
@@ -281,6 +315,38 @@ mod tests {
         let mut aut = AutWithHoles::new();
         let start = aut.expr_to_state(store, expr);
         Instantiate::new(aut, start, holes)
+    }
+
+    #[test]
+    fn weighted_search_counts_only_unknown_portions_of_holes() {
+        let mut store = mk_store();
+        let identity = store.one;
+        let expr = Expr::union(
+            Expr::hole(Hole(0)),
+            Expr::sequence(Expr::hole(Hole(1)), Expr::hole(Hole(2))),
+        );
+        let holes = (0..3).map(|h| (Hole(h), identity)).collect();
+        let inst = build_inst(&mut store, &expr, holes);
+        let upper = crate::holes::aut::ExplicitDFA {
+            start: 0,
+            transitions: vec![vec![]],
+            outputs: vec![store.zero],
+        };
+        let cex = inst
+            .check_upper_bound(&mut store, &upper, &HashMap::new())
+            .unwrap_err();
+        assert_eq!(
+            cex.witnesses.iter().map(|w| w.0).collect::<Vec<_>>(),
+            vec![Hole(0)]
+        );
+        let known = HashMap::from_iter([(Hole(1), identity), (Hole(2), identity)]);
+        let cex = inst
+            .check_upper_bound(&mut store, &upper, &known)
+            .unwrap_err();
+        assert_eq!(
+            cex.witnesses.iter().map(|w| w.0).collect::<Vec<_>>(),
+            vec![Hole(1), Hole(2)]
+        );
     }
 
     #[test]

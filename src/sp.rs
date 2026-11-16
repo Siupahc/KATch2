@@ -1,9 +1,9 @@
+use crate::hash::{HashMap, HashMapExt as _};
 // Symbolic Packets represent sets of concrete packets.
 // They are represented in a BDD-like structure.
 // Unlike traditional BDDs, we do not leave out any levels of the BDD:
 // each path down the BDD has precisely the same depth, namely the number of variables, i.e. the packet size in bits.
 
-use std::collections::HashMap;
 use std::fmt;
 
 use rand::seq::SliceRandom;
@@ -11,6 +11,8 @@ use rand::seq::SliceRandom;
 /// We use indices into the SP store to represent SPs.
 /// The zero SP is represented by SP(0) and the one SP is represented by SP(1).
 /// Indices into the store are the u32 value - 2.
+/// Zero nodes on 1 through `num_vars` fields occupy indices 2 through
+/// `num_vars + 1`, respectively, matching the SPP store's zero indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SP(pub u32);
 
@@ -52,7 +54,6 @@ pub struct SPstore {
     intersect_memo: HashMap<(SP, SP), SP>,
     complement_memo: HashMap<SP, SP>,
     ifelse_memo: HashMap<(Var, SP, SP), SP>,
-    is_zero_memo: HashMap<SP, bool>,
     count_memo: HashMap<SP, f32>,
 }
 
@@ -74,26 +75,40 @@ impl SPstore {
             one: SP::new(0), // Dummy values, will be set later
             // We prefill the memo tables with the results of the trivial cases
             // Need to benchmark if this is actually faster than checking these cases in the operations
-            union_memo: HashMap::from([
+            union_memo: HashMap::from_iter([
                 ((SP::new(0), SP::new(0)), SP::new(0)),
                 ((SP::new(0), SP::new(1)), SP::new(1)),
                 ((SP::new(1), SP::new(0)), SP::new(1)),
                 ((SP::new(1), SP::new(1)), SP::new(1)),
             ]),
-            intersect_memo: HashMap::from([
+            intersect_memo: HashMap::from_iter([
                 ((SP::new(0), SP::new(0)), SP::new(0)),
                 ((SP::new(0), SP::new(1)), SP::new(0)),
                 ((SP::new(1), SP::new(0)), SP::new(0)),
                 ((SP::new(1), SP::new(1)), SP::new(1)),
             ]),
-            complement_memo: HashMap::from([(SP::new(0), SP::new(1)), (SP::new(1), SP::new(0))]),
+            complement_memo: HashMap::from_iter([
+                (SP::new(0), SP::new(1)),
+                (SP::new(1), SP::new(0)),
+            ]),
             ifelse_memo: HashMap::new(),
-            is_zero_memo: HashMap::from([(SP::new(0), true), (SP::new(1), false)]),
-            count_memo: HashMap::from([(SP::new(0), 0.0), (SP::new(1), 1.0)]),
+            count_memo: HashMap::from_iter([(SP::new(0), 0.0), (SP::new(1), 1.0)]),
         };
+        // Reserve the contiguous zero range before allocating any other nodes.
         store.zero = store.zero();
         store.one = store.one();
         store
+    }
+
+    /// Release operation caches while preserving terminal cases and all handles.
+    /// The arena and its hash-consing index are not changed.
+    pub fn memo_reset(&mut self) {
+        let empty = Self::new(0);
+        self.union_memo = empty.union_memo;
+        self.intersect_memo = empty.intersect_memo;
+        self.complement_memo = empty.complement_memo;
+        self.ifelse_memo = empty.ifelse_memo;
+        self.count_memo = empty.count_memo;
     }
 
     pub fn get(&self, sp: SP) -> SPnode {
@@ -116,13 +131,20 @@ impl SPstore {
     }
 
     fn zero(&mut self) -> SP {
-        // We must construct a zero SP of the right depth
+        // Called first so the zero on d > 0 fields has index d + 1.
         let mut sp = SP::new(0);
         for _ in 0..self.num_vars {
             sp = self.mk(sp, sp);
         }
         sp
     }
+
+    /// The empty packet set on `depth` fields. `zero_at_depth(num_vars)` is `zero`.
+    pub fn zero_at_depth(&self, depth: Var) -> SP {
+        assert!(depth <= self.num_vars, "zero depth exceeds store depth");
+        SP::new(if depth == 0 { 0 } else { depth + 1 })
+    }
+
     fn one(&mut self) -> SP {
         // We must construct a one SP of the right depth
         let mut sp = SP::new(1);
@@ -155,14 +177,13 @@ impl SPstore {
         // current depth and `zero` is the all-rejecting SP at the same depth;
         // both must have matching depth or downstream operations break.
         let mut sp_val = SP::new(1);
-        let mut zero = SP::new(0);
-        for &bit in pkt.iter().rev() {
+        for (depth, &bit) in pkt.iter().rev().enumerate() {
+            let zero = self.zero_at_depth(depth as Var);
             sp_val = if bit {
                 self.mk(zero, sp_val)
             } else {
                 self.mk(sp_val, zero)
             };
-            zero = self.mk(zero, zero);
         }
         sp_val
     }
@@ -187,6 +208,12 @@ impl SPstore {
     }
 
     pub fn union(&mut self, a: SP, b: SP) -> SP {
+        if self.is_zero(a) {
+            return b;
+        }
+        if self.is_zero(b) {
+            return a;
+        }
         // First, check the memo table
         if let Some(&result) = self.union_memo.get(&(a, b)) {
             return result;
@@ -202,6 +229,12 @@ impl SPstore {
     }
 
     pub fn intersect(&mut self, a: SP, b: SP) -> SP {
+        if self.is_zero(a) {
+            return a;
+        }
+        if self.is_zero(b) {
+            return b;
+        }
         // First, check the memo table
         if let Some(&result) = self.intersect_memo.get(&(a, b)) {
             return result;
@@ -232,31 +265,27 @@ impl SPstore {
         res
     }
 
-    /// Computes the difference of two SPPs using `sp1 - sp2 === sp1 & !sp2`
+    /// Computes the difference of two SPs using `sp1 - sp2 === sp1 & !sp2`.
     pub fn difference(&mut self, sp1: SP, sp2: SP) -> SP {
+        if self.is_zero(sp1) || self.is_zero(sp2) {
+            return sp1;
+        }
         let not_sp2 = self.complement(sp2);
         self.intersect(sp1, not_sp2)
     }
 
-    /// Checks if an SP is zero (represents the empty set of packets)
-    pub fn is_zero(&mut self, sp: SP) -> bool {
-        // First, check the memo table
-        if let Some(&result) = self.is_zero_memo.get(&sp) {
-            return result;
-        }
-        // Because we prefilled the memo with base cases,
-        // we now know that we've got a real node, so we don't need to handle 0 or 1 cases here.
-        let node = self.get(sp);
-        let x0_is_zero = self.is_zero(node.x0);
-        let x1_is_zero = self.is_zero(node.x1);
-        let result = x0_is_zero && x1_is_zero;
-        self.is_zero_memo.insert(sp, result);
-        result
+    /// Checks whether a valid SP of at most `num_vars` fields is empty.
+    /// All such zero nodes are preallocated in a reserved index range.
+    pub fn is_zero(&self, sp: SP) -> bool {
+        sp.0 == 0 || (sp.0 >= 2 && sp.0 - 2 < self.num_vars)
     }
 
     /// Counts the total number of packets accepted by this SP.
     /// Returns an f32 so that large counts saturate to infinity instead of overflowing.
     pub fn count(&mut self, sp: SP) -> f32 {
+        if self.is_zero(sp) {
+            return 0.0;
+        }
         // First, check the memo table
         if let Some(&result) = self.count_memo.get(&sp) {
             return result;
@@ -276,6 +305,9 @@ impl SPstore {
         self.ifelse_helper(var, then_branch, else_branch)
     }
     fn ifelse_helper(&mut self, var: Var, then_branch: SP, else_branch: SP) -> SP {
+        if self.is_zero(then_branch) && self.is_zero(else_branch) {
+            return then_branch;
+        }
         // First, check the memo table
         if let Some(&result) = self.ifelse_memo.get(&(var, then_branch, else_branch)) {
             return result;
@@ -339,7 +371,7 @@ impl SPstore {
     }
 
     fn any_packet_helper(&mut self, sp: SP, acc: &mut Vec<bool>) -> bool {
-        if sp == SP::new(0) {
+        if self.is_zero(sp) {
             assert!(acc.is_empty());
             return false;
         } else if sp == SP::new(1) {
@@ -394,6 +426,50 @@ mod tests {
     use super::*;
 
     const N: Var = 2;
+
+    #[test]
+    fn memo_reset_releases_caches_and_preserves_handles() {
+        fn operations(store: &mut SPstore, a: SP, b: SP) -> (Vec<SP>, bool, f32) {
+            (
+                vec![
+                    store.union(a, b),
+                    store.intersect(a, b),
+                    store.complement(a),
+                    store.ifelse(0, a, b),
+                ],
+                store.is_zero(a),
+                store.count(a),
+            )
+        }
+        let mut store = SPstore::new(3);
+        let a = store.singleton(&[true, false, true]);
+        let b = store.singleton(&[false, true, false]);
+        let expected = operations(&mut store, a, b);
+        let nodes = store.nodes.clone();
+        let canonical_count = store.hc.len();
+        store.memo_reset();
+        let empty = SPstore::new(0);
+        assert_eq!(store.union_memo.len(), empty.union_memo.len());
+        assert_eq!(store.union_memo.capacity(), empty.union_memo.capacity());
+        assert_eq!(store.intersect_memo.len(), empty.intersect_memo.len());
+        assert_eq!(
+            store.intersect_memo.capacity(),
+            empty.intersect_memo.capacity()
+        );
+        assert_eq!(store.complement_memo.len(), empty.complement_memo.len());
+        assert_eq!(
+            store.complement_memo.capacity(),
+            empty.complement_memo.capacity()
+        );
+        assert_eq!(store.ifelse_memo.len(), empty.ifelse_memo.len());
+        assert_eq!(store.ifelse_memo.capacity(), empty.ifelse_memo.capacity());
+        assert_eq!(store.count_memo.len(), empty.count_memo.len());
+        assert_eq!(store.count_memo.capacity(), empty.count_memo.capacity());
+        assert_eq!(store.nodes, nodes);
+        assert_eq!(store.hc.len(), canonical_count);
+        assert_eq!(operations(&mut store, a, b), expected);
+        assert_eq!(store.nodes, nodes);
+    }
 
     #[test]
     fn test_laws_0() {
@@ -453,6 +529,79 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn zero_indices_survive_allocation_reset_and_clone() {
+        for fields in 0..=6 {
+            let mut store = SPstore::new(fields);
+            store.singleton(&vec![true; fields as usize]);
+            store.memo_reset();
+            let mut store = store.clone();
+            let mut zero = SP::new(0);
+            assert_eq!(store.zero_at_depth(0), zero);
+            assert!(store.is_zero(zero));
+            assert!(!store.is_zero(SP::new(1)));
+            for depth in 1..=fields {
+                zero = store.mk(zero, zero);
+                assert_eq!(zero, SP::new(depth + 1));
+                assert_eq!(store.zero_at_depth(depth), zero);
+                assert!(store.is_zero(zero));
+            }
+            assert_eq!(zero, store.zero);
+            for index in fields + 2..store.nodes.len() as u32 + 2 {
+                let node = store.get(SP::new(index));
+                assert!(!store.is_zero(node.x0) || !store.is_zero(node.x1));
+                assert!(!store.is_zero(SP::new(index)));
+            }
+        }
+    }
+
+    #[test]
+    fn zero_shortcuts_preserve_suffix_depth_without_filling_caches() {
+        let mut store = SPstore::new(6);
+        let sizes = |s: &SPstore| {
+            (
+                s.union_memo.len(),
+                s.intersect_memo.len(),
+                s.complement_memo.len(),
+                s.ifelse_memo.len(),
+                s.count_memo.len(),
+            )
+        };
+        let initial = sizes(&store);
+        let mut nonzero = SP::new(1);
+        for depth in 0..=store.num_vars {
+            let zero = store.zero_at_depth(depth);
+            assert_eq!(store.union(zero, nonzero), nonzero);
+            assert_eq!(store.union(nonzero, zero), nonzero);
+            assert_eq!(store.intersect(zero, nonzero), zero);
+            assert_eq!(store.intersect(nonzero, zero), zero);
+            assert_eq!(store.difference(zero, nonzero), zero);
+            assert_eq!(store.difference(nonzero, zero), nonzero);
+            assert_eq!(store.count(zero), 0.0);
+            if depth > 0 {
+                assert_eq!(store.ifelse_helper(depth - 1, zero, zero), zero);
+            }
+            assert_eq!(sizes(&store), initial);
+            if depth < store.num_vars {
+                nonzero = store.mk(nonzero, zero);
+            }
+        }
+    }
+
+    #[test]
+    fn union_shortcuts_zero_children() {
+        let mut store = SPstore::new(2);
+        let z = store.zero_at_depth(1);
+        let left = store.mk(SP::new(1), SP::new(0));
+        let right = store.mk(SP::new(0), SP::new(1));
+        let a = store.mk(left, z);
+        let b = store.mk(z, right);
+        let expected = store.mk(left, right);
+        let entries = store.union_memo.len();
+        assert_eq!(store.union(a, b), expected);
+        assert_eq!(store.union_memo.len(), entries + 1);
     }
 
     #[test]

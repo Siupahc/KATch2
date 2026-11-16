@@ -32,6 +32,19 @@ pub trait Candidate<'a>: ENFA<State: Ord> + NFA + Clone {
     /// The learner slot handle for this candidate kind ([`SppVar`] / [`CandVar`]).
     type Var: Copy + Eq + Hash;
 
+    fn sure_lower<L: SmtLearner<'a>>(_var: Self::Var, _learner: &L, store: &mut SPPstore) -> SPP {
+        store.zero
+    }
+    fn plausible_upper<L: SmtLearner<'a>>(
+        var: Self::Var,
+        learner: &L,
+        store: &mut SPPstore,
+        upper: &'a ExplicitDFA,
+    ) -> Self {
+        let _ = (var, learner);
+        Self::top(store, upper)
+    }
+
     /// Allocate a fresh learnable slot in `learner`.
     fn fresh_var<L: SmtLearner<'a>>(learner: &mut L, upper_bound: &'a ExplicitDFA) -> Self::Var;
 
@@ -91,6 +104,17 @@ fn concrete(pkt: &[bool]) -> Vec<AbstractBit> {
 
 impl<'a> Candidate<'a> for SPP {
     type Var = SppVar;
+    fn sure_lower<L: SmtLearner<'a>>(var: SppVar, learner: &L, store: &mut SPPstore) -> SPP {
+        learner.spp_bounds(var, store).0
+    }
+    fn plausible_upper<L: SmtLearner<'a>>(
+        var: SppVar,
+        learner: &L,
+        store: &mut SPPstore,
+        _upper: &'a ExplicitDFA,
+    ) -> Self {
+        learner.spp_bounds(var, store).1
+    }
 
     fn fresh_var<L: SmtLearner<'a>>(learner: &mut L, _upper_bound: &'a ExplicitDFA) -> SppVar {
         learner.fresh_spp()
@@ -156,6 +180,18 @@ impl<'a> Candidate<'a> for SPP {
 impl<'a> Candidate<'a> for Cand<'a> {
     type Var = CandVar;
 
+    fn plausible_upper<L: SmtLearner<'a>>(
+        var: CandVar,
+        learner: &L,
+        store: &mut SPPstore,
+        upper: &'a ExplicitDFA,
+    ) -> Self {
+        learner
+            .cand_bounds(var, store)
+            .map(|(_, upper)| upper)
+            .unwrap_or_else(|| Self::top(store, upper))
+    }
+
     fn fresh_var<L: SmtLearner<'a>>(learner: &mut L, upper_bound: &'a ExplicitDFA) -> CandVar {
         learner.fresh_cand(upper_bound)
     }
@@ -183,7 +219,7 @@ impl<'a> Candidate<'a> for Cand<'a> {
                         Some(ops::WithSinkState(dfa))
                     }
                 }
-                Constraint::LowerBound { .. } => None,
+                Constraint::LowerBound { .. } | Constraint::False => None,
             })
             .collect();
         ExplicitDFA::product(store, &completed)
@@ -246,6 +282,15 @@ impl<'a> Candidate<'a> for Cand<'a> {
             states = next;
         }
 
+        let (in_sp, out_sp) = if let Some((_, upper)) = learner.cand_bounds(var, store) {
+            upper.boundary_packets(store, pkt_start, &states, pkt_end, in_sp, out_sp)
+        } else {
+            (in_sp, out_sp)
+        };
+        if store.sp.is_zero(in_sp) || store.sp.is_zero(out_sp) {
+            return None;
+        }
+
         // Existentials pin the carry-in / carry-out packets to (in_sp, out_sp).
         let nv = store.num_vars() as usize;
         let in_vars: Vec<Existential> = (0..nv).map(|_| learner.fresh_existential()).collect();
@@ -270,6 +315,22 @@ impl<'a> Candidate<'a> for ops::Union<SPP, Cand<'a>> {
         <SPP as Candidate<'a>>::Var,
         <Cand<'a> as Candidate<'a>>::Var,
     );
+
+    fn sure_lower<L: SmtLearner<'a>>(var: Self::Var, learner: &L, store: &mut SPPstore) -> SPP {
+        SPP::sure_lower(var.0, learner, store)
+    }
+
+    fn plausible_upper<L: SmtLearner<'a>>(
+        var: Self::Var,
+        learner: &L,
+        store: &mut SPPstore,
+        upper: &'a ExplicitDFA,
+    ) -> Self {
+        ops::union(
+            SPP::plausible_upper(var.0, learner, store, upper),
+            Cand::plausible_upper(var.1, learner, store, upper),
+        )
+    }
 
     fn fresh_var<L: SmtLearner<'a>>(learner: &mut L, upper_bound: &'a ExplicitDFA) -> Self::Var {
         (

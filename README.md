@@ -4,7 +4,7 @@ A solver for Existential NetKAT, based on [KATch2](https://github.com/julesjacob
 
 ## Quick start
 
-1. Install Rust (using `rustup`) and Z3
+1. Install Rust (using `rustup`), a C++ compiler, and libclang (for the bundled CaDiCaL build)
 2. `cargo build --release`
 3. `./target/release/nksynth example.nksynth`
 
@@ -26,6 +26,8 @@ Options:
   -V, --version              Print version
 ```
 
+With `KATCH_METRICS=1`, it will also dump some run statistics.
+
 For what can appear in a `.nksynth` file, see `example.nksynth`.
 
 
@@ -35,7 +37,6 @@ For what can appear in a `.nksynth` file, see `example.nksynth`.
 - SPP: represents symbolic packet programs (relations on concrete packets, represented as a BDD)
 
 Our BDDs always store all intermediate levels. This is particularly relevant for SPP, where it is not clear what a missing level would indicate (zero, one, or top for the missing variables). In the future, we can investigate whether it is profitable do introduce a more complex scheme that can skip intermediate levels.
-
 
 ## Aut
 

@@ -10,15 +10,16 @@
 //!
 //! It's essentially an OBDD, like an SP or SPP, but the implementation is slightly different.
 
+use crate::hash::{HashMap, HashMapExt as _};
 use crate::holes::aut::{DFA, ENFA, ExplicitDFA, NFA, ops};
 use crate::spp;
 
-use std::collections::HashMap;
+mod bounds;
 
 #[derive(Debug, Clone)]
 pub struct Cand<'a> {
-    nodes: Vec<CandNode>,
-    head: CandIdx,
+    pub(crate) nodes: std::sync::Arc<[CandNode]>,
+    pub(crate) head: CandIdx,
     /// The DFA this candidate is built over.
     ///
     /// **Invariant:** `dfa` must be *complete* — its transition function must be
@@ -33,7 +34,7 @@ pub struct Cand<'a> {
 type CandIdx = u32;
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-enum CandNode {
+pub(crate) enum CandNode {
     /// Examine the next pair of fields in the input packet and "first" packet.
     NextField {
         b00: CandIdx,
@@ -268,7 +269,7 @@ impl<'a> Cand<'a> {
                 });
             }
             return Ok(Cand {
-                nodes: builder.nodes,
+                nodes: builder.nodes.into(),
                 head: node,
                 dfa,
             });
@@ -310,7 +311,7 @@ impl<'a> Cand<'a> {
             }
             let head = builder.mk(CandNode::Root(spp::SPP::new(label as u32)));
             return Ok(Cand {
-                nodes: builder.nodes,
+                nodes: builder.nodes.into(),
                 head,
                 dfa,
             });
@@ -414,7 +415,7 @@ impl<'a> Cand<'a> {
         // The root (node 0) is the sole depth-0 class.
         let head = cand_of[0].unwrap();
         Ok(Cand {
-            nodes: builder.nodes,
+            nodes: builder.nodes.into(),
             head,
             dfa,
         })
@@ -428,7 +429,7 @@ impl<'a> Cand<'a> {
         &self.nodes[idx as usize]
     }
 
-    pub fn accepts_input(&self, store: &mut spp::SPPstore, input: &Input) -> bool {
+    pub fn accepts_input(&self, store: &spp::SPPstore, input: &Input) -> bool {
         // Check that the input is well-formed
         let num_vars = store.num_vars() as usize;
         assert_eq!(input.pkt_in.len(), num_vars);
@@ -642,7 +643,7 @@ mod tests {
             &[true, true],
             &[false, false],
         );
-        assert!(cand.accepts_input(&mut store, &inp));
+        assert!(cand.accepts_input(&store, &inp));
     }
 
     #[test]
@@ -778,10 +779,7 @@ mod tests {
         let cand = Cand::from_examples(&mut store, &dfa, &examples).unwrap();
         assert_consistent(&cand, &mut store, &examples);
         assert!(
-            cand.accepts_input(
-                &mut store,
-                &input(&[true], &[true], &[0], &[false], &[false])
-            ),
+            cand.accepts_input(&store, &input(&[true], &[true], &[0], &[false], &[false])),
             "positive evidence under prefix (0,0) must generalize to the merged prefix (1,1)"
         );
     }
@@ -837,7 +835,7 @@ mod tests {
                 let pkt_out = bits(NV);
 
                 let via_input = cand.accepts_input(
-                    &mut store,
+                    &store,
                     &input(&pkt_in, &pkt_start, &identity, &pkt_start, &pkt_out),
                 );
                 let trace = vec![pkt_in, pkt_start];
@@ -895,7 +893,11 @@ mod tests {
     use crate::holes::aut::expr_to_dfa;
 
     fn two_dup_dfa(store: &mut spp::SPPstore) -> ExplicitDFA {
-        expr_to_dfa(&Expr::sequence(Expr::dup(), Expr::dup()), store)
+        let arena = &bumpalo::Bump::new();
+        expr_to_dfa(
+            Expr::sequence(arena, Expr::dup(arena), Expr::dup(arena)),
+            store,
+        )
     }
 
     /// Totalize `dfa` (add a sink state) and materialize it, satisfying the
@@ -925,8 +927,9 @@ mod tests {
     /// the `Start -> Middle -> output` path (which needs no `Middle` step).
     #[test]
     fn top_cand_over_one_dup_accepts_its_length_two_trace() {
+        let arena = &bumpalo::Bump::new();
         let mut store = spp::SPPstore::new(1);
-        let raw = expr_to_dfa(&Expr::dup(), &mut store);
+        let raw = expr_to_dfa(Expr::dup(arena), &mut store);
         let dfa = complete(&mut store, &raw);
         let top = Cand::from_examples(&mut store, &dfa, &[]).unwrap();
         let p = vec![false];

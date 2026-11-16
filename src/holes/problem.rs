@@ -7,14 +7,14 @@
 //! [`ProblemInstance::solve_full`] methods run the CEGIS loop
 //! ([`crate::holes::cegis`]) and report a per-hole solution.
 
-use std::collections::HashMap;
-
+use crate::hash::HashMap;
 use crate::holes::aut::{ExplicitDFA, SubsetDfa, ops};
 use crate::holes::cand::Cand;
 use crate::holes::candidate::Candidate;
-use crate::holes::cegis::{CegisError, run};
+use crate::holes::cegis::CegisError;
 use crate::holes::nk_with_holes::{AutWithHoles, Expr, State};
-use crate::holes::smt::Z3;
+use crate::holes::restarts;
+use crate::holes::smt::Native;
 use crate::spp::{self, SPP};
 
 /// The formal hole standing for an unknown sub-program. Re-exported from
@@ -23,7 +23,7 @@ pub use crate::expr::Hole;
 
 /// A single constraint relating a hole-bearing automaton to a concrete DFA.
 ///
-/// Each variant pairs an [`AutWithHoles`] (with its pinned start [`State`])
+/// Each bound variant pairs an [`AutWithHoles`] (with its pinned start [`State`])
 /// against an [`ExplicitDFA`].  Once the holes are filled with concrete
 /// candidates, the constraint asserts a containment between the resulting
 /// instantiated automaton and the DFA; see the variant docs for the
@@ -34,6 +34,8 @@ pub use crate::expr::Hole;
 /// the underlying automaton for you.
 #[derive(Debug, Clone)]
 pub enum Constraint {
+    /// A hole-free assertion was already checked and found false.
+    False,
     /// `dfa ⊆ aut[holes]`: the DFA is a lower bound on the instantiated
     /// automaton (every triple the DFA accepts must also be accepted).
     LowerBound {
@@ -83,6 +85,7 @@ impl Constraint {
     /// The hole-bearing automaton this constraint is over.
     pub fn aut(&self) -> &AutWithHoles {
         match self {
+            Constraint::False => panic!("a false constraint has no automaton or DFA"),
             Constraint::LowerBound { aut, .. }
             | Constraint::UpperBound { aut, .. }
             | Constraint::Equality { aut, .. } => aut,
@@ -92,6 +95,7 @@ impl Constraint {
     /// The pinned start state of [`Constraint::aut`].
     pub fn start(&self) -> State {
         match self {
+            Constraint::False => panic!("a false constraint has no automaton or DFA"),
             Constraint::LowerBound { start, .. }
             | Constraint::UpperBound { start, .. }
             | Constraint::Equality { start, .. } => *start,
@@ -101,6 +105,7 @@ impl Constraint {
     /// The concrete DFA this constraint compares against.
     pub fn dfa(&self) -> &ExplicitDFA {
         match self {
+            Constraint::False => panic!("a false constraint has no automaton or DFA"),
             Constraint::LowerBound { dfa, .. }
             | Constraint::UpperBound { dfa, .. }
             | Constraint::Equality { dfa, .. } => dfa,
@@ -108,10 +113,12 @@ impl Constraint {
     }
 }
 
-/// Compile a hole-bearing [`Expr`] into its automaton and visible start state.
+/// Compile and preprocess a hole-bearing [`Expr`] before any candidates are
+/// installed. All CEGIS iterations and restart attempts reuse the result.
 fn compile(store: &mut spp::SPPstore, expr: &Expr) -> (AutWithHoles, State) {
     let mut aut = AutWithHoles::new();
     let start = aut.expr_to_state(store, expr);
+    aut.preprocess_epsilon(store, start);
     (aut, start)
 }
 
@@ -129,7 +136,9 @@ impl ProblemInstance {
     /// hole (or a [`CegisError`] if no solution exists / the search is
     /// inconclusive).
     ///
-    /// `max_iters` caps the number of CEGIS refinement rounds: pass `Some(n)` to
+    /// Attempts default to reluctant doubling with an initial cutoff of 150
+    /// iterations, configurable through [`crate::experiment::Config`].
+    /// `max_iters` caps the total CEGIS rounds across all attempts: pass `Some(n)` to
     /// give up with [`CegisError::IterationLimit`] after `n` rounds, or `None`
     /// to loop until the problem is solved or proven infeasible.
     ///
@@ -138,12 +147,16 @@ impl ProblemInstance {
         // SPP candidates ignore the reference DFA, but the loop still needs one.
         let reference_dfa =
             <SPP as Candidate>::make_reference_dfa(&mut self.store, &self.constraints);
-        run::<SPP, Z3>(
+        restarts::run::<SPP, Native>(
             &self.constraints,
             &self.holes,
             &reference_dfa,
             &mut self.store,
             max_iters,
+            restarts::Config {
+                save_bounds: crate::experiment::save_restart_bounds(),
+                initial_cutoff: crate::experiment::restart_baseline(),
+            },
         )
     }
 
@@ -151,7 +164,7 @@ impl ProblemInstance {
     /// dup-ful [`Cand`]), returning each hole's synthesized sub-program as an
     /// [`ExplicitDFA`].
     ///
-    /// `max_iters` caps the number of CEGIS refinement rounds (see
+    /// `max_iters` caps the total CEGIS refinement rounds across attempts (see
     /// [`ProblemInstance::solve`]).
     ///
     /// This searches a strictly larger space than [`ProblemInstance::solve`], so
@@ -165,12 +178,16 @@ impl ProblemInstance {
             &mut self.store,
             &self.constraints,
         );
-        let candidates: HashMap<Hole, ops::Union<SPP, Cand<'_>>> = run::<_, Z3>(
+        let candidates: HashMap<Hole, ops::Union<SPP, Cand<'_>>> = restarts::run::<_, Native>(
             &self.constraints,
             &self.holes,
             &reference_dfa,
             &mut self.store,
             max_iters,
+            restarts::Config {
+                save_bounds: crate::experiment::save_restart_bounds(),
+                initial_cutoff: crate::experiment::restart_baseline(),
+            },
         )?;
         // Materialize each candidate (an NFA) into a concrete DFA via subset
         // construction while `reference_dfa` is still alive.

@@ -1,8 +1,12 @@
+use crate::hash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use crate::sp;
 use crate::spp;
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::hash::Hash;
+
+mod upper;
+pub(crate) use upper::get_weighted_upper_bound_counterexample;
 
 /// Nondeterministic symbolic NetKAT automaton with epsilon transitions.
 ///
@@ -347,31 +351,27 @@ impl<T: DFA> DFA for Memo<T> {}
 
 // ---- EpsilonClosure<T> -----------------------------------------------------
 
-/// Wraps an `ENFA` and presents it as an `NFA` by collapsing epsilon paths.
+/// Presents an `ENFA` as an `NFA` by collapsing epsilon paths on demand.
 ///
-/// The `State` type is unchanged, but the wrapper is only intended to be
-/// queried at *visible* states of the underlying ENFA -- invisible states are
-/// the ones that `epsilon_closure` walks through to produce the NFA's
-/// transitions and outputs.
+/// For each queried source state, a floodfill tracks SPP relations from the
+/// original packet to packets at epsilon-reachable states. Only newly reached
+/// packet pairs are propagated, until the relations reach a fixed point.
+///
+/// The final output SPP and outgoing transitions are computed together and
+/// memoized per source state; the intermediate reachability map is discarded.
+/// The state type is unchanged. Queries are valid at visible states and at the
+/// start state, even when the start is invisible in the underlying ENFA.
 #[derive(Clone)]
 pub struct EpsilonClosure<T: ENFA> {
     inner: T,
-    memo: RefCell<HashMap<T::State, Vec<(spp::SPP, T::State)>>>,
+    memo: RefCell<HashMap<T::State, EpsilonState<T::State>>>,
 }
 
-/// Insert `(key, spp)` into `map`, unioning the SPP with any existing entry.
-/// Used inside the closure construction to keep `(state, spp)` lists free of
-/// duplicate target states -- two paths to the same `v` collapse into one
-/// entry whose SPP is the union of theirs.
-fn union_into<S: Eq + Hash>(
-    map: &mut HashMap<S, spp::SPP>,
-    store: &mut spp::SPPstore,
-    key: S,
-    spp: spp::SPP,
-) {
-    let zero = store.zero;
-    let entry = map.entry(key).or_insert(zero);
-    *entry = store.union(*entry, spp);
+/// Fully computed NFA results for one source state.
+#[derive(Clone)]
+struct EpsilonState<S> {
+    output: spp::SPP,
+    transitions: Vec<(spp::SPP, S)>,
 }
 
 impl<T: ENFA> EpsilonClosure<T> {
@@ -433,156 +433,84 @@ impl<T: ENFA> EpsilonClosure<T> {
         full
     }
 
-    /// Returns the ε-closure of `q`: a list of `(spp, p)` pairs where `p` is
-    /// `q` itself (with `spp = one`) or any *invisible* state reachable from
-    /// `q` along an invisible-only path; `spp` is the composition of SPPs
-    /// along that path.  Visible states other than `q` itself are
-    /// deliberately not included -- reaching them would require a real
-    /// "consumption" transition, which lies outside ε-closure.
-    ///
-    /// Used internally to drive `start`, `transitions`, and `output`:
-    ///   * `start` filters this closure to visible (just `q` if visible);
-    ///   * `transitions` "pre-closes" the source `q`, then takes one inner
-    ///     transition into a visible target;
-    ///   * `output` sums `inner.output(q)` with the closure's invisible-end
-    ///     contributions.
-    ///
-    /// Results are memoized per state.
+    /// Map each epsilon-reachable state to its packet relation from `q`.
+    /// Identity seeds `q` itself. Paths may enter only invisible states:
+    /// entering a visible state consumes a packet and ends the epsilon path.
     fn epsilon_closure(
         &self,
         store: &mut spp::SPPstore,
         q: &T::State,
-    ) -> Vec<(spp::SPP, T::State)> {
-        if let Some(cached) = self.memo.borrow().get(q) {
-            return cached.clone();
-        }
+    ) -> HashMap<T::State, spp::SPP> {
+        // For this origin q, reachable[p] relates the packet at q to the
+        // packet at p. Propagate only newly discovered pairs, preserving the
+        // origin through relational composition rather than projecting to SPs.
+        let mut reachable: HashMap<T::State, spp::SPP> = HashMap::new();
+        let mut todo: HashMap<T::State, spp::SPP> = HashMap::new();
+        let mut worklist = vec![q.clone()];
+        todo.insert(q.clone(), store.one);
 
-        // BFS to find every state whose closure we need to solve for as part
-        // of the linear system: `q` itself plus every invisible state
-        // reachable via inner transitions to invisibles, except those that
-        // are already memoized (we splice their cached closures in instead).
-        let mut nodes_set: HashSet<T::State> = HashSet::new();
-        let mut frontier: Vec<T::State> = vec![q.clone()];
-        nodes_set.insert(q.clone());
-        while let Some(s) = frontier.pop() {
-            for (_, q_next) in self.inner.transitions(store, &s) {
-                if self.inner.is_visible(store, &q_next) {
+        while let Some(p) = worklist.pop() {
+            let Some(pending) = todo.remove(&p) else {
+                continue;
+            };
+            let done = reachable.get(&p).copied().unwrap_or(store.zero);
+            let diff = store.difference(pending, done);
+            if diff == store.zero {
+                continue;
+            }
+            let combined = store.union(done, diff);
+            reachable.insert(p.clone(), combined);
+
+            for (edge, target) in self.inner.transitions(store, &p) {
+                // Entering a visible state consumes a trace packet, so that
+                // edge belongs to the NFA's transitions, not its epsilon closure.
+                if self.inner.is_visible(store, &target) {
                     continue;
                 }
-                if self.memo.borrow().contains_key(&q_next) {
+                let reach = store.sequence(diff, edge);
+                if reach == store.zero {
                     continue;
                 }
-                if nodes_set.insert(q_next.clone()) {
-                    frontier.push(q_next);
+                let prev = todo.get(&target).copied().unwrap_or(store.zero);
+                let next = store.union(prev, reach);
+                if next != prev {
+                    todo.insert(target.clone(), next);
+                    worklist.push(target);
                 }
             }
         }
 
-        let nodes: Vec<T::State> = nodes_set.into_iter().collect();
-        let n = nodes.len();
-        let index: HashMap<T::State, usize> = nodes
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(i, s)| (s, i))
-            .collect();
+        reachable
+    }
 
-        // For each node `s_i` in our subgraph:
-        //  * `consts[i]` starts with the self-entry `(one, s_i)` (length-zero
-        //    path) and absorbs the spliced closures of any already-memoized
-        //    invisible neighbours.
-        //  * `edges[i][j]` is the SPP coefficient on the ε-edge from `s_i`
-        //    to the unknown invisible neighbour `s_j`, unioned across
-        //    multiple inner transitions.
-        // Visible neighbours are skipped: they aren't part of the ε-closure.
-        let mut consts: Vec<HashMap<T::State, spp::SPP>> = vec![HashMap::new(); n];
-        let mut edges: Vec<Vec<spp::SPP>> = vec![vec![store.zero; n]; n];
-        for i in 0..n {
-            let s_i = nodes[i].clone();
-            union_into(&mut consts[i], store, s_i.clone(), store.one);
-            for (spp, q_next) in self.inner.transitions(store, &s_i) {
-                if self.inner.is_visible(store, &q_next) {
-                    continue;
-                } else if let Some(memoized) = self.memo.borrow().get(&q_next).cloned() {
-                    for (spp_inner, v) in memoized {
-                        let combined = store.sequence(spp, spp_inner);
-                        union_into(&mut consts[i], store, v, combined);
-                    }
-                } else {
-                    let j = index[&q_next];
-                    edges[i][j] = store.union(edges[i][j], spp);
+    /// The first query for either result computes and caches both. The
+    /// intermediate closure is discarded once the NFA results are built.
+    fn ensure_cached(&self, store: &mut spp::SPPstore, q: &T::State) {
+        if self.memo.borrow().contains_key(q) {
+            return;
+        }
+        let mut output = store.zero;
+        let mut transitions = HashMap::new();
+        for (p, path) in self.epsilon_closure(store, q) {
+            let inner_output = self.inner.output(store, &p);
+            let contribution = store.sequence(path, inner_output);
+            output = store.union(output, contribution);
+            for (edge, target) in self.inner.transitions(store, &p) {
+                if self.inner.is_visible(store, &target) {
+                    let contribution = store.sequence(path, edge);
+                    let entry = transitions.entry(target).or_insert(store.zero);
+                    *entry = store.union(*entry, contribution);
                 }
             }
         }
-
-        // Forward pass: upper-triangularize via Arden's lemma.
-        for k in 0..n {
-            let l_star = store.star(edges[k][k]);
-
-            // consts[k] := l_star · consts[k]
-            let old = std::mem::take(&mut consts[k]);
-            for (v, spp) in old {
-                let new_spp = store.sequence(l_star, spp);
-                union_into(&mut consts[k], store, v, new_spp);
-            }
-
-            // edges[k][j] := l_star · edges[k][j] for j > k
-            for spp in &mut edges[k][(k + 1)..] {
-                *spp = store.sequence(l_star, *spp);
-            }
-
-            let consts_k_snap: Vec<(T::State, spp::SPP)> =
-                consts[k].iter().map(|(v, &s)| (v.clone(), s)).collect();
-            let edges_k_snap: Vec<spp::SPP> = edges[k].clone();
-
-            for i in (k + 1)..n {
-                let m = edges[i][k];
-                if m == store.zero {
-                    continue;
-                }
-                for (v, spp) in &consts_k_snap {
-                    let new_spp = store.sequence(m, *spp);
-                    union_into(&mut consts[i], store, v.clone(), new_spp);
-                }
-                for j in (k + 1)..n {
-                    let new_edge = store.sequence(m, edges_k_snap[j]);
-                    edges[i][j] = store.union(edges[i][j], new_edge);
-                }
-            }
-        }
-
-        // Backward pass: back-substitute.
-        let mut closures: Vec<HashMap<T::State, spp::SPP>> = vec![HashMap::new(); n];
-        for k in (0..n).rev() {
-            let mut cl = std::mem::take(&mut consts[k]);
-            for j in (k + 1)..n {
-                let m = edges[k][j];
-                if m == store.zero {
-                    continue;
-                }
-                let entries: Vec<(T::State, spp::SPP)> =
-                    closures[j].iter().map(|(v, &s)| (v.clone(), s)).collect();
-                for (v, spp) in entries {
-                    let new_spp = store.sequence(m, spp);
-                    union_into(&mut cl, store, v, new_spp);
-                }
-            }
-            closures[k] = cl;
-        }
-
-        // Memoize every node's closure (in deduped Vec form) and return q's.
-        let q_idx = index[q];
-        let mut memo = self.memo.borrow_mut();
-        let mut q_closure: Vec<(spp::SPP, T::State)> = Vec::new();
-        for (i, cl_map) in closures.into_iter().enumerate() {
-            let cl_vec: Vec<(spp::SPP, T::State)> =
-                cl_map.into_iter().map(|(v, s)| (s, v)).collect();
-            if i == q_idx {
-                q_closure = cl_vec.clone();
-            }
-            memo.insert(nodes[i].clone(), cl_vec);
-        }
-        q_closure
+        let transitions = transitions.into_iter().map(|(p, s)| (s, p)).collect();
+        self.memo.borrow_mut().insert(
+            q.clone(),
+            EpsilonState {
+                output,
+                transitions,
+            },
+        );
     }
 }
 
@@ -607,17 +535,8 @@ impl<T: ENFA> ENFA for EpsilonClosure<T> {
     /// The combined SPP is the closure path composed with the transition's.
     fn transitions(&self, store: &mut spp::SPPstore, q: &T::State) -> Vec<(spp::SPP, T::State)> {
         self.assert_is_valid_state(store, q);
-        let mut result: HashMap<T::State, spp::SPP> = HashMap::new();
-        for (path, p) in self.epsilon_closure(store, q) {
-            for (spp_t, q_next) in self.inner.transitions(store, &p) {
-                if !self.inner.is_visible(store, &q_next) {
-                    continue;
-                }
-                let combined = store.sequence(path, spp_t);
-                union_into(&mut result, store, q_next, combined);
-            }
-        }
-        result.into_iter().map(|(v, s)| (s, v)).collect()
+        self.ensure_cached(store, q);
+        self.memo.borrow()[q].transitions.clone()
     }
 
     /// For a visible `q`: union of `inner.output(q)` and, for every
@@ -626,16 +545,8 @@ impl<T: ENFA> ENFA for EpsilonClosure<T> {
     /// `q` and ε-walking to an invisible state and terminating there.
     fn output(&self, store: &mut spp::SPPstore, q: &T::State) -> spp::SPP {
         self.assert_is_valid_state(store, q);
-        let mut result = self.inner.output(store, q);
-        for (spp, p) in self.epsilon_closure(store, q) {
-            if self.inner.is_visible(store, &p) {
-                continue;
-            }
-            let inner_out = self.inner.output(store, &p);
-            let composed = store.sequence(spp, inner_out);
-            result = store.union(result, composed);
-        }
-        result
+        self.ensure_cached(store, q);
+        self.memo.borrow()[q].output
     }
 }
 
@@ -1405,7 +1316,7 @@ pub fn compute_coreachable<A: ENFA>(
 ) -> HashMap<A::State, sp::SP> {
     // Explore the graph from the start state, recording each state's predecessors
     let start = aut.start(store);
-    let mut seen: HashSet<A::State> = HashSet::from([start.clone()]);
+    let mut seen: HashSet<A::State> = HashSet::from_iter([start.clone()]);
     let mut order: Vec<A::State> = vec![start.clone()];
     let mut stack = vec![start];
     let mut preds: HashMap<A::State, Vec<(spp::SPP, A::State)>> = HashMap::new();
@@ -1671,14 +1582,13 @@ pub(crate) fn singleton_sp(store: &mut spp::SPPstore, packet: &[bool]) -> sp::SP
 /// `p_out == packet`, regardless of `p_in`.
 fn force_output_spp(store: &mut spp::SPPstore, packet: &[bool]) -> spp::SPP {
     let mut allow = spp::SPP::new(1);
-    let mut zero = spp::SPP::new(0);
-    for &bit in packet.iter().rev() {
+    for (depth, &bit) in packet.iter().rev().enumerate() {
+        let zero = store.zero_at_depth(depth as spp::Var);
         let new_allow = if bit {
             store.mk(zero, allow, zero, allow)
         } else {
             store.mk(allow, zero, allow, zero)
         };
-        zero = store.mk(zero, zero, zero, zero);
         allow = new_allow;
     }
     allow
@@ -1688,14 +1598,13 @@ fn force_output_spp(store: &mut spp::SPPstore, packet: &[bool]) -> spp::SPP {
 /// `p_in == packet`, regardless of `p_out`.
 fn filter_input_spp(store: &mut spp::SPPstore, packet: &[bool]) -> spp::SPP {
     let mut allow = spp::SPP::new(1);
-    let mut zero = spp::SPP::new(0);
-    for &bit in packet.iter().rev() {
+    for (depth, &bit) in packet.iter().rev().enumerate() {
+        let zero = store.zero_at_depth(depth as spp::Var);
         let new_allow = if bit {
             store.mk(zero, zero, allow, allow)
         } else {
             store.mk(allow, allow, zero, zero)
         };
-        zero = store.mk(zero, zero, zero, zero);
         allow = new_allow;
     }
     allow
@@ -2231,8 +2140,9 @@ mod tests {
     /// states are dense `usize` indices; SPPs live in `aut`'s shared store,
     /// so multiple DFAs from the same `aut` interoperate freely.
     fn random_dfa(aut: &mut crate::aut::Aut, expr_depth: usize, num_fields: u32) -> ExplicitDFA {
-        let (expr, _) = crate::fuzz::genax(0, expr_depth, num_fields);
-        let state = aut.expr_to_state(&expr);
+        let arena = &bumpalo::Bump::new();
+        let (expr, _) = crate::fuzz::genax(arena, 0, expr_depth, num_fields);
+        let state = aut.expr_to_state(expr);
         aut_to_dfa(aut, state)
     }
 
@@ -2252,6 +2162,116 @@ mod tests {
             visible: (0..n).map(|_| crate::fuzz::random::<bool>()).collect(),
         };
         EpsilonClosure::new(wrapper)
+    }
+
+    #[test]
+    fn epsilon_closure_caches_output_and_transitions_together() {
+        struct CountingEnfa {
+            calls: std::cell::Cell<usize>,
+        }
+        impl ENFA for CountingEnfa {
+            type State = usize;
+
+            fn start(&self, _store: &mut spp::SPPstore) -> usize {
+                0
+            }
+
+            fn is_visible(&self, _store: &mut spp::SPPstore, q: &usize) -> bool {
+                *q != 1
+            }
+
+            fn transitions(&self, store: &mut spp::SPPstore, q: &usize) -> Vec<(spp::SPP, usize)> {
+                self.calls.set(self.calls.get() + 1);
+                if *q < 2 {
+                    vec![(store.one, q + 1)]
+                } else {
+                    vec![]
+                }
+            }
+
+            fn output(&self, store: &mut spp::SPPstore, _q: &usize) -> spp::SPP {
+                self.calls.set(self.calls.get() + 1);
+                store.one
+            }
+        }
+
+        let mut store = spp::SPPstore::new(1);
+        let closure = EpsilonClosure::new(CountingEnfa {
+            calls: std::cell::Cell::new(0),
+        });
+        assert_eq!(closure.output(&mut store, &0), store.one);
+        let calls = closure.inner().calls.get();
+        assert_eq!(closure.transitions(&mut store, &0), vec![(store.one, 2)]);
+        assert_eq!(closure.output(&mut store, &0), store.one);
+        assert_eq!(closure.inner().calls.get(), calls);
+
+        // A different source gets its own entry, even when transitions are
+        // requested first. Its output query must also reuse that entry.
+        assert!(closure.transitions(&mut store, &2).is_empty());
+        assert!(closure.inner().calls.get() > calls);
+        let calls = closure.inner().calls.get();
+        assert_eq!(closure.output(&mut store, &2), store.one);
+        assert_eq!(closure.inner().calls.get(), calls);
+        assert_eq!(closure.memo.borrow().len(), 2);
+    }
+
+    #[test]
+    fn epsilon_closure_matches_packet_pair_reachability() {
+        let mut store = spp::SPPstore::new(2);
+        let set_first = store.assign(0, true);
+        let clear_first = store.assign(0, false);
+        let set_second = store.assign(1, true);
+        let raw = RandomVisibility {
+            inner: ExplicitDFA {
+                start: 0,
+                transitions: vec![
+                    vec![(set_first, 1), (store.zero, 4)],
+                    vec![(set_second, 2)],
+                    vec![(clear_first, 1), (store.one, 3)],
+                    vec![(store.top, 4)],
+                    vec![],
+                ],
+                outputs: vec![store.zero; 5],
+            },
+            visible: vec![true, false, false, true, false],
+        };
+        let closure = EpsilonClosure::new(raw);
+        let packets: Vec<Vec<bool>> = (0..4).map(|n| vec![n & 1 != 0, n & 2 != 0]).collect();
+
+        // Independently enumerate concrete (state, packet) reachability for
+        // each origin packet, including cycles and the visible-state barrier.
+        for origin in 0..5 {
+            let relations = closure.epsilon_closure(&mut store, &origin);
+            for input in &packets {
+                let mut seen = HashSet::new();
+                let mut todo = vec![(origin, input.clone())];
+                while let Some((p, packet)) = todo.pop() {
+                    if !seen.insert((p, packet.clone())) {
+                        continue;
+                    }
+                    for (edge, target) in closure.inner().transitions(&mut store, &p) {
+                        if closure.inner().is_visible(&mut store, &target) {
+                            continue;
+                        }
+                        for output in &packets {
+                            if store.accepts(edge, &packet, output) {
+                                todo.push((target, output.clone()));
+                            }
+                        }
+                    }
+                }
+                for target in 0..5 {
+                    let relation = relations.get(&target).copied().unwrap_or(store.zero);
+                    for output in &packets {
+                        assert_eq!(
+                            store.accepts(relation, input, output),
+                            seen.contains(&(target, output.clone())),
+                            "origin={origin}, target={target}, input={input:?}, output={output:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -2278,6 +2298,135 @@ mod tests {
                 trial, dfa_empty, closure_empty
             );
         }
+    }
+
+    #[test]
+    fn direct_upper_check_matches_closure_and_returns_full_witnesses() {
+        crate::fuzz::seed_fuzzer(0xEFA_2026);
+        for trial in 0..500 {
+            let mut arena = crate::aut::Aut::new(2);
+            let nfa = random_nfa(&mut arena, 3, 2);
+            let upper = random_dfa(&mut arena, 3, 2);
+            let store = arena.spp_store_mut();
+            let old = ops::intersection(&nfa, ops::complement(&upper));
+            let empty = is_empty(&old, store);
+            for weighted in [false, true] {
+                let result = get_weighted_upper_bound_counterexample(
+                    nfa.inner(),
+                    &upper,
+                    store,
+                    |q, label, target, _| vec![(label, weighted && (q + target) % 2 == 0)],
+                );
+                assert_eq!(result.is_none(), empty, "trial {trial}");
+                if let Some((path, output)) = result {
+                    let raw = nfa.inner();
+                    assert_eq!(path[0].0, raw.start(store));
+                    for pair in path.windows(2) {
+                        assert!(
+                            raw.transitions(store, &pair[0].0).iter().any(|(r, q)| {
+                                *q == pair[1].0 && store.accepts(*r, &pair[0].1, &pair[1].1)
+                            }),
+                            "invalid full-path edge on trial {trial}"
+                        );
+                    }
+                    let last = path.last().unwrap();
+                    let relation = raw.output(store, &last.0);
+                    assert!(store.accepts(relation, &last.1, &output));
+                    let trace: Vec<_> = path
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, (q, p))| {
+                            (i == 0 || raw.is_visible(store, q)).then_some(p.clone())
+                        })
+                        .collect();
+                    assert!(nfa.nfa_accepts(store, &trace, &output));
+                    assert!(!upper.nfa_accepts(store, &trace, &output));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn weighted_upper_minimizes_paid_edges_across_visible_boundaries() {
+        let mut store = spp::SPPstore::new(1);
+        // Short route costs two; longer route costs one. Both cross visible
+        // boundaries, so an independently saturated epsilon loop is insufficient.
+        let raw = RandomVisibility {
+            inner: ExplicitDFA {
+                start: 0,
+                transitions: vec![
+                    vec![(store.one, 1), (store.one, 3)],
+                    vec![(store.one, 2)],
+                    vec![],
+                    vec![(store.one, 4)],
+                    vec![(store.one, 5)],
+                    vec![(store.one, 2)],
+                ],
+                outputs: vec![
+                    store.zero, store.zero, store.one, store.zero, store.zero, store.zero,
+                ],
+            },
+            visible: vec![true, true, true, false, true, false],
+        };
+        let upper = ExplicitDFA {
+            start: 0,
+            transitions: vec![vec![(store.top, 0)]],
+            outputs: vec![store.zero],
+        };
+        let (path, _) =
+            get_weighted_upper_bound_counterexample(&raw, &upper, &mut store, |q, label, _, _| {
+                vec![(label, *q == 0 || *q == 1)]
+            })
+            .unwrap();
+        assert_eq!(
+            path.iter().map(|x| x.0).collect::<Vec<_>>(),
+            vec![0, 3, 4, 5, 2]
+        );
+    }
+
+    #[test]
+    fn direct_upper_check_preserves_visible_anchor_through_packet_changes() {
+        let mut store = spp::SPPstore::new(1);
+        let set = store.assign(0, true);
+        let raw = RandomVisibility {
+            inner: ExplicitDFA {
+                start: 0,
+                transitions: vec![vec![(set, 1)], vec![(store.one, 2)], vec![]],
+                outputs: vec![store.zero, store.zero, store.one],
+            },
+            visible: vec![false, false, true],
+        };
+        let exact = ExplicitDFA {
+            start: 0,
+            transitions: vec![vec![(set, 1)], vec![]],
+            outputs: vec![store.zero, store.one],
+        };
+        assert!(
+            get_weighted_upper_bound_counterexample(
+                &raw,
+                &exact,
+                &mut store,
+                |_, label, _, _| vec![(label, false)]
+            )
+            .is_none()
+        );
+        let identity = ExplicitDFA {
+            start: 0,
+            transitions: vec![vec![(store.one, 1)], vec![]],
+            outputs: vec![store.zero, store.one],
+        };
+        let (path, output) = get_weighted_upper_bound_counterexample(
+            &raw,
+            &identity,
+            &mut store,
+            |_, label, _, _| vec![(label, false)],
+        )
+        .unwrap();
+        assert_eq!(
+            path,
+            vec![(0, vec![false]), (1, vec![true]), (2, vec![true])]
+        );
+        assert_eq!(output, vec![true]);
     }
 
     #[test]
@@ -2608,16 +2757,17 @@ mod tests {
 
     #[test]
     fn fuzz_explicit_dfa() {
+        let arena = &bumpalo::Bump::new();
         crate::fuzz::seed_fuzzer(0x5EED_0008);
         let expr_depth = 4;
         let num_fields = 3;
         let max_trials = 500;
 
         for trial in 0..max_trials {
-            let (expr, _) = crate::fuzz::genax(0, expr_depth, num_fields);
+            let (expr, _) = crate::fuzz::genax(arena, 0, expr_depth, num_fields);
 
             let mut aut = crate::aut::Aut::new(num_fields);
-            let state = aut.expr_to_state(&expr);
+            let state = aut.expr_to_state(expr);
 
             let dfa = aut_to_dfa(&mut aut, state);
 

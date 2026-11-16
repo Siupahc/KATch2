@@ -18,29 +18,35 @@
 //! into [`crate::expr::Expr::Hole`] and inlining definitions — is a separate
 //! pass and not the parser's job.
 
-use crate::desugar::{DesugarEnv, DesugarError, desugar_with_env};
+use super::desugar::{Env, Term};
+use crate::desugar::DesugarError;
 use crate::expr::{Exp, Expr, Hole};
-use crate::holes::aut::expr_to_dfa;
-use crate::holes::nk_with_holes::Expr as HExpr;
+use crate::hash::HashMapExt as _;
+use crate::holes::aut::{is_empty, ops};
 use crate::holes::problem::{Constraint, ProblemInstance};
 use crate::parser::{Lexer, ParseError, Parser, Span, TokenKind};
 use crate::spp;
+use bumpalo::Bump;
 
 /// A fully-parsed `.nksynth` file: an ordered list of statements.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Program {
-    pub statements: Vec<Stmt>,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Program<'a> {
+    pub statements: &'a [Stmt<'a>],
 }
 
 /// One top-level statement.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Stmt {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Stmt<'a> {
     /// `hole NAME` — declares a synthesis hole.
-    Hole(String),
+    Hole(&'a str),
     /// `def NAME = expr` — names a sub-expression.
-    Def(String, Exp),
+    Def(&'a str, Exp<'a>),
     /// `assert lhs <= rhs` or `assert lhs == rhs`.
-    Assert { lhs: Exp, op: AssertOp, rhs: Exp },
+    Assert {
+        lhs: Exp<'a>,
+        op: AssertOp,
+        rhs: Exp<'a>,
+    },
 }
 
 /// The only two comparison operators allowed in an assertion.
@@ -53,10 +59,10 @@ pub enum AssertOp {
 }
 
 /// Parse a whole `.nksynth` source string into a [`Program`].
-pub fn parse_program(input: &str) -> Result<Program, ParseError> {
+pub fn parse_program<'a>(arena: &'a Bump, input: &'a str) -> Result<Program<'a>, ParseError> {
     let lexer = Lexer::new(input);
-    let mut parser = Parser::new(lexer);
-    let mut statements = Vec::new();
+    let mut parser = Parser::new(lexer, arena);
+    let mut statements = bumpalo::collections::Vec::new_in(arena);
 
     loop {
         let tok = parser.peek_cloned()?;
@@ -75,7 +81,7 @@ pub fn parse_program(input: &str) -> Result<Program, ParseError> {
                 statements.push(Stmt::Def(name, expr));
             }
             // `assert` is not a lexer keyword, so it arrives as a plain ident.
-            TokenKind::Ident(ref s) if s == "assert" => {
+            TokenKind::Ident("assert") => {
                 parser.advance()?; // consume `assert`
                 let lhs = parser.parse_single_expression()?;
                 let op = expect_assert_op(&mut parser)?;
@@ -94,13 +100,15 @@ pub fn parse_program(input: &str) -> Result<Program, ParseError> {
         }
     }
 
-    Ok(Program { statements })
+    Ok(Program {
+        statements: statements.into_bump_slice(),
+    })
 }
 
 /// Consume an identifier token, returning its name. Hole/def names must be
 /// plain identifiers (reserved single letters like `X` and `xN` field tokens
 /// are rejected).
-fn expect_ident(parser: &mut Parser, context: &str) -> Result<String, ParseError> {
+fn expect_ident<'a>(parser: &mut Parser<'a>, context: &str) -> Result<&'a str, ParseError> {
     let tok = parser.advance()?;
     match tok.kind {
         TokenKind::Ident(name) => Ok(name),
@@ -148,7 +156,7 @@ fn err(message: String, span: Span) -> ParseError {
 /// every assertion).  This sizes the SPP store.
 pub fn num_fields(program: &Program) -> u32 {
     let mut max = 0;
-    for stmt in &program.statements {
+    for stmt in program.statements {
         match stmt {
             Stmt::Hole(_) => {}
             Stmt::Def(_, expr) => max = max.max(expr.num_fields()),
@@ -193,91 +201,44 @@ pub fn has_holes(expr: &Expr) -> bool {
     }
 }
 
-/// Convert a desugared [`Expr`] into a [`nk_with_holes::Expr`](HExpr),
-/// compiling predicate/assignment leaves into SPPs.
-///
-/// Panics if the expression uses a construct `nk_with_holes::Expr` cannot
-/// represent: intersection, xor, difference, complement, the LTL operators, or
-/// any sugar that should have been desugared away.
-pub fn to_hole_expr(expr: &Expr, store: &mut spp::SPPstore) -> HExpr {
-    if let Some(spp) = to_test(expr, store) {
-        return HExpr::spp(spp);
-    }
-    match expr {
-        // Expr::Top => HExpr::spp(store.top), // BUG
-        Expr::Assign(f, v) => {
-            let s = store.assign(*f, *v);
-            HExpr::spp(s)
-        }
-        Expr::Dup => HExpr::dup(),
-        Expr::Hole(h) => HExpr::hole(*h),
-        Expr::Union(a, b) => HExpr::union(to_hole_expr(a, store), to_hole_expr(b, store)),
-        Expr::Sequence(a, b) => HExpr::sequence(to_hole_expr(a, store), to_hole_expr(b, store)),
-        Expr::Star(e) => HExpr::star(to_hole_expr(e, store)),
-        other => panic!("to_hole_expr: construct not supported by nk_with_holes::Expr: {other:?}"),
-    }
-}
-
-fn to_test(expr: &Expr, store: &mut spp::SPPstore) -> Option<spp::SPP> {
-    match *expr {
-        Expr::Zero => Some(store.zero),
-        Expr::One => Some(store.one),
-        Expr::Test(f, v) => Some(store.test(f, v)),
-        Expr::Union(ref a, ref b) => {
-            let a = to_test(a, store)?;
-            let b = to_test(b, store)?;
-            Some(store.union(a, b))
-        }
-        Expr::Intersect(ref a, ref b) => {
-            let a = to_test(a, store)?;
-            let b = to_test(b, store)?;
-            Some(store.intersect(a, b))
-        }
-        Expr::TestNegation(ref a) => {
-            let a = to_test(a, store)?;
-            Some(store.complement(a))
-        }
-        _ => None,
-    }
-}
-
 /// Lower a parsed [`Program`] into a [`ProblemInstance`].
 ///
-/// Maintains a [`DesugarEnv`]: each `hole NAME` binds `NAME` to a fresh
+/// Maintains shared compiled definitions: each `hole NAME` binds `NAME` to a fresh
 /// [`Expr::Hole`] (so expressions referencing it pick up the hole during
 /// desugaring), and each `def NAME = expr` binds `NAME` to its desugared body.
-/// For every assertion, [`has_holes`] decides the constraint shape:
+/// Cached hole information decides the constraint shape for every assertion:
 ///
 /// * `lhs <= rhs` with holes on the left  → [`Constraint::upper_bound`] (`lhs[holes] ⊆ rhs`)
 /// * `lhs <= rhs` with holes on the right → [`Constraint::lower_bound`] (`lhs ⊆ rhs[holes]`)
-/// * `lhs == rhs`                          → [`Constraint::equality`]
+/// * `lhs == rhs` with holes              → [`Constraint::equality`]
 ///
 /// The hole-free side is compiled into the reference DFA; the hole-bearing side
-/// into the hole automaton. If neither side has holes, the left side plays the
-/// hole-automaton role (a pure verification constraint).
+/// into the hole automaton. Hole-free assertions are checked here: passing
+/// assertions are omitted, and failing assertions become [`Constraint::False`].
 pub fn desugar(program: &Program) -> Result<ProblemInstance, DesugarError> {
     let n = num_fields(program);
     let mut store = spp::SPPstore::new(n);
-    let mut env = DesugarEnv::new();
+    let mut env = Env::default();
     let mut holes: Vec<Hole> = Vec::new();
     let mut constraints: Vec<Constraint> = Vec::new();
 
-    for stmt in &program.statements {
+    for stmt in program.statements {
         match stmt {
             Stmt::Hole(name) => {
                 let h = Hole(holes.len() as u32);
                 holes.push(h);
-                env.add_variable(name.clone(), Expr::hole(h));
+                env.bind(name, Term::hole(h));
             }
             Stmt::Def(name, expr) => {
-                let desugared = desugar_with_env(expr, &env)?;
-                env.add_variable(name.clone(), desugared);
+                let desugared = env.compile(expr, &mut store)?;
+                env.bind(name, desugared);
             }
             Stmt::Assert { lhs, op, rhs } => {
-                let dl = desugar_with_env(lhs, &env)?;
-                let dr = desugar_with_env(rhs, &env)?;
-                let constraint = build_constraint(&mut store, &dl, *op, &dr)?;
-                constraints.push(constraint);
+                let dl = env.compile(lhs, &mut store)?;
+                let dr = env.compile(rhs, &mut store)?;
+                if let Some(constraint) = build_constraint(&mut store, &dl, *op, &dr)? {
+                    constraints.push(constraint);
+                }
             }
         }
     }
@@ -291,15 +252,17 @@ pub fn desugar(program: &Program) -> Result<ProblemInstance, DesugarError> {
 
 /// Build the constraint for a single (desugared) assertion. The hole-bearing
 /// side becomes the hole automaton; the hole-free side becomes the reference
-/// DFA. Errors if both sides contain holes.
+/// DFA. Passing hole-free assertions are verified immediately and return `None`.
+/// A false assertion returns [`Constraint::False`]; having holes on both
+/// sides is an error.
 fn build_constraint(
     store: &mut spp::SPPstore,
-    lhs: &Expr,
+    lhs: &Term,
     op: AssertOp,
-    rhs: &Expr,
-) -> Result<Constraint, DesugarError> {
-    let lhs_holes = has_holes(lhs);
-    let rhs_holes = has_holes(rhs);
+    rhs: &Term,
+) -> Result<Option<Constraint>, DesugarError> {
+    let lhs_holes = lhs.has_holes;
+    let rhs_holes = rhs.has_holes;
     if lhs_holes && rhs_holes {
         return Err(DesugarError {
             message:
@@ -308,30 +271,43 @@ fn build_constraint(
         });
     }
 
+    if !lhs_holes && !rhs_holes {
+        let lhs_dfa = lhs.to_lazy_dfa(store);
+        let rhs_dfa = rhs.to_lazy_dfa(store);
+        let contained = |store: &mut spp::SPPstore, lhs, rhs| {
+            is_empty(&ops::intersection(lhs, ops::complement(rhs)), store)
+        };
+        if !contained(store, &lhs_dfa, &rhs_dfa)
+            || (op == AssertOp::Eq && !contained(store, &rhs_dfa, &lhs_dfa))
+        {
+            return Ok(Some(Constraint::False));
+        }
+        return Ok(None);
+    }
+
     let constraint = match op {
         AssertOp::Eq => {
-            // Equality is symmetric: put the hole-bearing side (or `lhs` when
-            // neither has holes) on the automaton side.
+            // Equality is symmetric: put the hole-bearing side on the automaton side.
             let (hole_side, dfa_side) = if rhs_holes { (rhs, lhs) } else { (lhs, rhs) };
-            let dfa = expr_to_dfa(dfa_side, store);
-            let hole_expr = to_hole_expr(hole_side, store).simplify(store);
+            let dfa = dfa_side.to_dfa(store);
+            let hole_expr = hole_side.to_hole_expr();
             Constraint::equality(store, &hole_expr, dfa)
         }
         AssertOp::Leq if rhs_holes => {
             // lhs ⊆ rhs[holes]: the DFA is a lower bound on the automaton.
-            let dfa = expr_to_dfa(lhs, store);
-            let hole_expr = to_hole_expr(rhs, store).simplify(store);
+            let dfa = lhs.to_dfa(store);
+            let hole_expr = rhs.to_hole_expr();
             Constraint::lower_bound(store, &hole_expr, dfa)
         }
         AssertOp::Leq => {
             // lhs[holes] ⊆ rhs: the DFA is an upper bound on the automaton.
-            let dfa = expr_to_dfa(rhs, store);
-            let hole_expr = to_hole_expr(lhs, store).simplify(store);
+            let dfa = rhs.to_dfa(store);
+            let hole_expr = lhs.to_hole_expr();
             Constraint::upper_bound(store, &hole_expr, dfa)
         }
     };
 
-    Ok(constraint)
+    Ok(Some(constraint))
 }
 
 // --- Plugging a solution into a Program ---------------------------------------
@@ -342,9 +318,13 @@ fn build_constraint(
 /// the format `nksynth --output` writes). Each `hole NAME` statement is replaced, in place, by the
 /// solution's `def NAME = expr`, so the rest of the program sees the solution wherever it used the
 /// hole.
-pub fn fill_holes(program: &Program, solution: &Program) -> Result<Program, String> {
-    let mut defs: std::collections::HashMap<&str, &Exp> = std::collections::HashMap::new();
-    for stmt in &solution.statements {
+pub fn fill_holes<'a>(
+    program: &Program<'a>,
+    solution: &Program<'a>,
+    arena: &'a Bump,
+) -> Result<Program<'a>, String> {
+    let mut defs: crate::hash::HashMap<&str, &Exp> = crate::hash::HashMap::new();
+    for stmt in solution.statements {
         match stmt {
             Stmt::Def(name, expr) => {
                 if defs.insert(name, expr).is_some() {
@@ -355,32 +335,58 @@ pub fn fill_holes(program: &Program, solution: &Program) -> Result<Program, Stri
         }
     }
 
-    let mut statements = Vec::with_capacity(program.statements.len());
-    for stmt in &program.statements {
+    let mut statements =
+        bumpalo::collections::Vec::with_capacity_in(program.statements.len(), arena);
+    for stmt in program.statements {
         statements.push(match stmt {
             Stmt::Hole(name) => {
                 let expr = defs
-                    .remove(name.as_str())
+                    .remove(*name)
                     .ok_or_else(|| format!("solution has no definition for hole `{name}`"))?;
-                Stmt::Def(name.clone(), expr.clone())
+                Stmt::Def(name, expr)
             }
-            other => other.clone(),
+            other => *other,
         });
     }
 
     if let Some(name) = defs.keys().next() {
         return Err(format!("solution defines `{name}`, which is not a hole"));
     }
-    Ok(Program { statements })
+    Ok(Program {
+        statements: statements.into_bump_slice(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::expr::Expr;
 
     #[test]
+    fn compiled_problem_outlives_source_and_syntax_arena() {
+        let mut instance = {
+            let source = String::from("hole filter\nassert filter == (x0 := 1)");
+            let arena = Bump::new();
+            let program = parse_program(&arena, &source).unwrap();
+            let Stmt::Hole(name) = program.statements[0] else {
+                panic!("expected hole")
+            };
+            assert_eq!(
+                name.as_ptr(),
+                source[source.find("filter").unwrap()..].as_ptr()
+            );
+            desugar(&program).unwrap()
+        };
+        // Neither the source buffer nor any AST storage remains alive here.
+        let solution = instance.solve(None).unwrap();
+        let expected = instance.store.assign(0, true);
+        assert_eq!(solution[&Hole(0)], expected);
+    }
+
+    #[test]
     fn parses_holes_defs_and_asserts() {
+        let arena = &bumpalo::Bump::new();
         let src = "\
             hole foo\n\
             hole bar\n\
@@ -388,15 +394,15 @@ mod tests {
             def b = x0 == 1\n\
             assert a <= b\n\
             assert a == b\n";
-        let prog = parse_program(src).expect("should parse");
+        let prog = parse_program(arena, src).expect("should parse");
         assert_eq!(prog.statements.len(), 6);
 
-        assert_eq!(prog.statements[0], Stmt::Hole("foo".to_string()));
-        assert_eq!(prog.statements[1], Stmt::Hole("bar".to_string()));
+        assert_eq!(prog.statements[0], Stmt::Hole("foo"));
+        assert_eq!(prog.statements[1], Stmt::Hole("bar"));
 
         match &prog.statements[2] {
             Stmt::Def(name, expr) => {
-                assert_eq!(name, "a");
+                assert_eq!(*name, "a");
                 assert_eq!(**expr, Expr::Assign(0, true));
             }
             other => panic!("expected Def, got {other:?}"),
@@ -405,8 +411,8 @@ mod tests {
         match &prog.statements[4] {
             Stmt::Assert { lhs, op, rhs } => {
                 assert_eq!(*op, AssertOp::Leq);
-                assert_eq!(**lhs, Expr::Var("a".to_string()));
-                assert_eq!(**rhs, Expr::Var("b".to_string()));
+                assert_eq!(**lhs, Expr::Var("a"));
+                assert_eq!(**rhs, Expr::Var("b"));
             }
             other => panic!("expected Assert, got {other:?}"),
         }
@@ -419,14 +425,16 @@ mod tests {
 
     #[test]
     fn empty_input_is_empty_program() {
-        let prog = parse_program("   \n  // just a comment\n").expect("should parse");
+        let arena = &bumpalo::Bump::new();
+        let prog = parse_program(arena, "   \n  // just a comment\n").expect("should parse");
         assert!(prog.statements.is_empty());
     }
 
     #[test]
     fn assert_with_compound_expressions() {
+        let arena = &bumpalo::Bump::new();
         let src = "assert (x0 := 1) ; dup <= dup ; (x0 := 1)\n";
-        let prog = parse_program(src).expect("should parse");
+        let prog = parse_program(arena, src).expect("should parse");
         assert_eq!(prog.statements.len(), 1);
         match &prog.statements[0] {
             Stmt::Assert { lhs, op, rhs } => {
@@ -442,8 +450,9 @@ mod tests {
 
     #[test]
     fn rejects_reserved_letter_as_hole_name() {
+        let arena = &bumpalo::Bump::new();
         // `X` lexes as the LTL-next operator, not an identifier.
-        let result = parse_program("hole X\n");
+        let result = parse_program(arena, "hole X\n");
         assert!(result.is_err());
     }
 
@@ -451,7 +460,9 @@ mod tests {
 
     #[test]
     fn num_fields_takes_max_over_all_expressions() {
+        let arena = &bumpalo::Bump::new();
         let prog = parse_program(
+            arena,
             "def a = x0 := 1\n\
              def b = x3 := 1\n\
              assert (x1 == 1) <= (x2 == 1)\n",
@@ -463,16 +474,23 @@ mod tests {
 
     #[test]
     fn has_holes_detects_nested_holes() {
+        let arena = &bumpalo::Bump::new();
         assert!(has_holes(&Expr::Hole(Hole(0))));
-        assert!(has_holes(
-            &Expr::Sequence(Expr::dup(), Expr::hole(Hole(1)),)
-        ));
-        assert!(!has_holes(&Expr::Sequence(Expr::dup(), Expr::one())));
+        assert!(has_holes(&Expr::Sequence(
+            Expr::dup(arena),
+            Expr::hole(arena, Hole(1)),
+        )));
+        assert!(!has_holes(&Expr::Sequence(
+            Expr::dup(arena),
+            Expr::one(arena)
+        )));
     }
 
     #[test]
     fn desugar_equality_constraint() {
+        let arena = &bumpalo::Bump::new();
         let prog = parse_program(
+            arena,
             "hole h\n\
              def target = x0 := 1\n\
              assert h == target\n",
@@ -487,15 +505,18 @@ mod tests {
 
     #[test]
     fn desugar_leq_picks_bound_direction() {
+        let arena = &bumpalo::Bump::new();
         // Holes on the left → upper bound (lhs[holes] ⊆ rhs).
-        let upper = desugar(&parse_program("hole h\nassert h <= (x0 == 1)\n").unwrap()).unwrap();
+        let upper =
+            desugar(&parse_program(arena, "hole h\nassert h <= (x0 == 1)\n").unwrap()).unwrap();
         assert!(matches!(
             upper.constraints[0],
             Constraint::UpperBound { .. }
         ));
 
         // Holes on the right → lower bound (lhs ⊆ rhs[holes]).
-        let lower = desugar(&parse_program("hole h\nassert (x0 == 1) <= h\n").unwrap()).unwrap();
+        let lower =
+            desugar(&parse_program(arena, "hole h\nassert (x0 == 1) <= h\n").unwrap()).unwrap();
         assert!(matches!(
             lower.constraints[0],
             Constraint::LowerBound { .. }
@@ -504,15 +525,80 @@ mod tests {
 
     #[test]
     fn desugar_errors_when_both_sides_have_holes() {
-        let prog = parse_program("hole h\nhole g\nassert h <= g\n").unwrap();
+        let arena = &bumpalo::Bump::new();
+        let prog = parse_program(arena, "hole h\nhole g\nassert h <= g\n").unwrap();
         assert!(desugar(&prog).is_err());
     }
 
     #[test]
+    fn hole_free_assertions_are_checked_during_construction() {
+        let arena = &bumpalo::Bump::new();
+        for source in [
+            "assert (x0 == 1) <= 1",
+            "assert (x0 == 1) + (x0 == 0) == 1",
+            "assert dup <= dup + 1",
+            "assert (dup + 1) - dup == 1",
+            "assert (dup + 1) & dup == dup",
+            "assert 0 == 0",
+        ] {
+            let instance = desugar(&parse_program(arena, source).unwrap()).unwrap();
+            assert!(instance.constraints.is_empty(), "{source}");
+        }
+
+        for source in [
+            "assert 1 <= (x0 == 1)",
+            "assert (x0 == 1) == 1",
+            "assert 1 == (x0 == 1)",
+            "assert dup + 1 == dup",
+            "assert dup == dup + 1",
+            "assert dup <= 1",
+            "hole h\nassert h == 1\nassert 1 == 0",
+        ] {
+            let mut instance = desugar(&parse_program(arena, source).unwrap()).unwrap();
+            assert!(
+                instance
+                    .constraints
+                    .iter()
+                    .any(|c| matches!(c, Constraint::False)),
+                "{source}"
+            );
+            assert_eq!(
+                instance.solve(Some(0)),
+                Err(crate::holes::cegis::CegisError::Infeasible),
+                "{source}"
+            );
+            assert!(
+                matches!(
+                    instance.solve_full(Some(0)),
+                    Err(crate::holes::cegis::CegisError::Infeasible)
+                ),
+                "{source}"
+            );
+        }
+
+        let source = "hole h\ndef identity = 1\nassert identity == 1\nassert h == (x0 := 1)\nassert dup <= dup + 1";
+        let mut instance = desugar(&parse_program(arena, source).unwrap()).unwrap();
+        assert_eq!(instance.constraints.len(), 1);
+        assert!(matches!(
+            instance.constraints[0],
+            Constraint::Equality { .. }
+        ));
+        assert!(instance.solve(Some(100)).unwrap().contains_key(&Hole(0)));
+        assert!(
+            instance
+                .solve_full(Some(100))
+                .unwrap()
+                .contains_key(&Hole(0))
+        );
+    }
+
+    #[test]
     fn fill_holes_checks_solutions() {
-        let prog = parse_program("hole h\nhole g\nassert h; g == (x0 := 1; x1 := 0)\n").unwrap();
+        let arena = &bumpalo::Bump::new();
+        let prog =
+            parse_program(arena, "hole h\nhole g\nassert h; g == (x0 := 1; x1 := 0)\n").unwrap();
         let check = |solution: &str| {
-            let filled = fill_holes(&prog, &parse_program(solution).unwrap())?;
+            let filled = fill_holes(&prog, &parse_program(arena, solution).unwrap(), arena)?;
             let mut instance = desugar(&filled).map_err(|e| e.to_string())?;
             assert!(instance.holes.is_empty());
             Ok::<bool, String>(instance.solve(None).is_ok())

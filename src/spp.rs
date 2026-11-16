@@ -1,3 +1,4 @@
+use crate::hash::{HashMap, HashMapExt as _};
 // Symbolic Packet Programs represent relations of concrete packets.
 // They are represented in a BDD-like structure.
 // Unlike traditional BDDs, we do not leave out any levels of the BDD:
@@ -10,11 +11,12 @@ use rand::seq::SliceRandom;
 
 use crate::expr::Exp;
 use crate::sp::{SP, SPnode, SPstore};
-use std::collections::HashMap;
 
 /// We use indices into the SPP store to represent SPPs.
 /// The zero SPP is represented by SPP(0) and the one SPP is represented by SPP(1).
 /// Indices into the store are the u32 value - 2.
+/// Zero nodes on 1 through `num_vars` fields occupy indices 2 through
+/// `num_vars + 1`, respectively.
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SPP(pub u32);
@@ -42,7 +44,11 @@ impl std::fmt::Display for SPP {
 pub type Var = u32;
 
 /// The store of SPPs. (store = arena + memo tables)
-#[derive(Debug)]
+///
+/// Cloning copies both arenas and all memo tables, preserving existing SPP/SP
+/// handles. Each copy can then grow independently; handles allocated after
+/// cloning belong only to the store that created them.
+#[derive(Debug, Clone)]
 pub struct SPPstore {
     num_vars: Var, // Idea: it's ok to pick this larger than you need. Hash consing & memoization will handle it
     nodes: Vec<SPPnode>, // the arena
@@ -63,14 +69,10 @@ pub struct SPPstore {
     test_memo: HashMap<(Var, bool), SPP>,
     assign_memo: HashMap<(Var, bool), SPP>,
     flip_memo: HashMap<SPP, SPP>,
-    is_zero_memo: HashMap<SPP, bool>,
 
     pub sp: SPstore,
     fwd_memo: HashMap<SPP, SP>,
     ifwd_memo: HashMap<SP, SPP>,
-
-    /// `zeros[d]` is the zero SPP on `d` fields (the empty relation at depth `d`)
-    zeros: Vec<SPP>,
 }
 
 /// A node in the SPP store. Has four children, one for each combination of the two variables.
@@ -93,53 +95,52 @@ impl SPPstore {
             top: SPP::new(0), // Dummy values, will be set later
             // We prefill the memo tables with the results of the trivial cases
             // Need to benchmark if this is actually faster than checking these cases in the operations
-            union_memo: HashMap::from([
+            union_memo: HashMap::from_iter([
                 ((SPP::new(0), SPP::new(0)), SPP::new(0)),
                 ((SPP::new(0), SPP::new(1)), SPP::new(1)),
                 ((SPP::new(1), SPP::new(0)), SPP::new(1)),
                 ((SPP::new(1), SPP::new(1)), SPP::new(1)),
             ]),
-            intersect_memo: HashMap::from([
+            intersect_memo: HashMap::from_iter([
                 ((SPP::new(0), SPP::new(0)), SPP::new(0)),
                 ((SPP::new(0), SPP::new(1)), SPP::new(0)),
                 ((SPP::new(1), SPP::new(0)), SPP::new(0)),
                 ((SPP::new(1), SPP::new(1)), SPP::new(1)),
             ]),
-            xor_memo: HashMap::from([
+            xor_memo: HashMap::from_iter([
                 ((SPP::new(0), SPP::new(0)), SPP::new(0)),
                 ((SPP::new(0), SPP::new(1)), SPP::new(1)),
                 ((SPP::new(1), SPP::new(0)), SPP::new(1)),
                 ((SPP::new(1), SPP::new(1)), SPP::new(0)),
             ]),
-            difference_memo: HashMap::from([
+            difference_memo: HashMap::from_iter([
                 ((SPP::new(0), SPP::new(0)), SPP::new(0)),
                 ((SPP::new(0), SPP::new(1)), SPP::new(0)),
                 ((SPP::new(1), SPP::new(0)), SPP::new(1)),
                 ((SPP::new(1), SPP::new(1)), SPP::new(0)),
             ]),
-            sequence_memo: HashMap::from([
+            sequence_memo: HashMap::from_iter([
                 ((SPP::new(0), SPP::new(0)), SPP::new(0)),
                 ((SPP::new(0), SPP::new(1)), SPP::new(0)),
                 ((SPP::new(1), SPP::new(0)), SPP::new(0)),
                 ((SPP::new(1), SPP::new(1)), SPP::new(1)),
             ]),
-            star_memo: HashMap::from([(SPP::new(0), SPP::new(1)), (SPP::new(1), SPP::new(1))]),
-            complement_memo: HashMap::from([
+            star_memo: HashMap::from_iter([(SPP::new(0), SPP::new(1)), (SPP::new(1), SPP::new(1))]),
+            complement_memo: HashMap::from_iter([
                 (SPP::new(0), SPP::new(1)),
                 (SPP::new(1), SPP::new(0)),
             ]),
             // branch_memo: HashMap::new(),
             test_memo: HashMap::new(),
             assign_memo: HashMap::new(),
-            flip_memo: HashMap::from([(SPP::new(0), SPP::new(0)), (SPP::new(1), SPP::new(1))]),
-            is_zero_memo: HashMap::from([(SPP::new(0), true), (SPP::new(1), false)]),
+            flip_memo: HashMap::from_iter([(SPP::new(0), SPP::new(0)), (SPP::new(1), SPP::new(1))]),
             sp: SPstore::new(num_vars),
 
             // in the memo tables, we only want the base cases for 0 and 1
-            fwd_memo: HashMap::from([(SPP::new(0), SP::new(0)), (SPP::new(1), SP::new(1))]),
-            ifwd_memo: HashMap::from([(SP::new(0), SPP::new(0)), (SP::new(1), SPP::new(1))]),
-            zeros: vec![],
+            fwd_memo: HashMap::from_iter([(SPP::new(0), SP::new(0)), (SPP::new(1), SP::new(1))]),
+            ifwd_memo: HashMap::from_iter([(SP::new(0), SPP::new(0)), (SP::new(1), SPP::new(1))]),
         };
+        // Allocate all zero nodes first, reserving their contiguous index range.
         store.zero = store.zero();
         store.one = store.one();
         store.top = store.top();
@@ -147,8 +148,58 @@ impl SPPstore {
         store
     }
 
+    /// Release operation caches, retaining only the terminal base cases.
+    /// Arenas and hash-consing indexes remain intact, so every existing handle
+    /// keeps its meaning. Replacing the maps also releases their capacity.
+    pub fn memo_reset(&mut self) {
+        let empty = Self::new(0);
+        self.union_memo = empty.union_memo;
+        self.intersect_memo = empty.intersect_memo;
+        self.xor_memo = empty.xor_memo;
+        self.difference_memo = empty.difference_memo;
+        self.sequence_memo = empty.sequence_memo;
+        self.star_memo = empty.star_memo;
+        self.complement_memo = empty.complement_memo;
+        self.test_memo = empty.test_memo;
+        self.assign_memo = empty.assign_memo;
+        self.flip_memo = empty.flip_memo;
+        self.fwd_memo = empty.fwd_memo;
+        self.ifwd_memo = empty.ifwd_memo;
+        self.sp.memo_reset();
+    }
+
     pub fn num_vars(&self) -> Var {
         self.num_vars
+    }
+
+    /// Copy only the DAG reachable from `roots`, preserving sharing between
+    /// roots. No operation caches or unrelated arena nodes are retained.
+    pub fn import(&mut self, source: &Self, roots: &[SPP]) -> Vec<SPP> {
+        assert_eq!(self.num_vars, source.num_vars);
+        fn copy(
+            s: SPP,
+            source: &SPPstore,
+            target: &mut SPPstore,
+            memo: &mut HashMap<SPP, SPP>,
+        ) -> SPP {
+            if s.as_u32() < 2 || source.is_zero(s) {
+                return s;
+            }
+            if let Some(&result) = memo.get(&s) {
+                return result;
+            }
+            let n = source.get(s);
+            let [a, b, c, d] =
+                [n.x00, n.x01, n.x10, n.x11].map(|child| copy(child, source, target, memo));
+            let result = target.mk(a, b, c, d);
+            memo.insert(s, result);
+            result
+        }
+        let mut memo = HashMap::new();
+        roots
+            .iter()
+            .map(|&s| copy(s, source, self, &mut memo))
+            .collect()
     }
 
     /// Retrieves the SPPnode corresponding to a given SPP index.
@@ -169,6 +220,10 @@ impl SPPstore {
 
     /// Computes the possible output packet set from applying the `SPP`
     pub fn fwd(&mut self, spp: SPP) -> SP {
+        if self.is_zero(spp) {
+            // SP and SPP stores reserve the same indices for zeros at each depth.
+            return SP::new(spp.0);
+        }
         // Check the memo table to see if fwd(spp) already exists
         if let Some(&result) = self.fwd_memo.get(&spp) {
             return result;
@@ -200,6 +255,10 @@ impl SPPstore {
     /// Computes the SPP corresponding to the `sp` returned by `fwd`.     
     /// - `ifwd` is a right inverse of `fwd`, i.e. `fwd ∘ ifwd = id_SP`
     pub fn ifwd(&mut self, sp: SP) -> SPP {
+        if self.sp.is_zero(sp) {
+            // Preserve the suffix depth using the shared zero-index layout.
+            return SPP::new(sp.0);
+        }
         // Check the memo table to see if ifwd(spp) already exists
         if let Some(&result) = self.ifwd_memo.get(&sp) {
             return result;
@@ -264,13 +323,11 @@ impl SPPstore {
     }
 
     fn zero(&mut self) -> SPP {
-        // We must construct a zero SPP of the right depth. Along the way, fill in `zeros` with the
-        // zero SPP of every depth.
+        // Called before allocating any other nodes, so the zero on d > 0 fields
+        // has index d + 1. Hash consing preserves these canonical handles.
         let mut spp = SPP::new(0);
-        self.zeros = vec![spp];
         for _ in 0..self.num_vars {
             spp = self.mk(spp, spp, spp, spp);
-            self.zeros.push(spp);
         }
         spp
     }
@@ -278,7 +335,8 @@ impl SPPstore {
     /// The zero SPP (the empty relation) on `depth` fields, i.e. at the level of a node for field
     /// `num_vars - depth`. `zero_at_depth(num_vars)` is `self.zero`.
     pub fn zero_at_depth(&self, depth: Var) -> SPP {
-        self.zeros[depth as usize]
+        assert!(depth <= self.num_vars, "zero depth exceeds store depth");
+        SPP::new(if depth == 0 { 0 } else { depth + 1 })
     }
     fn top(&mut self) -> SPP {
         // We must construct a top SPP of the right depth
@@ -291,15 +349,20 @@ impl SPPstore {
     fn one(&mut self) -> SPP {
         // We must construct a one SPP of the right depth
         let mut spp_one = SPP::new(1);
-        let mut spp_zero = SPP::new(0);
-        for _ in 0..self.num_vars {
+        for depth in 0..self.num_vars {
+            let spp_zero = self.zero_at_depth(depth);
             spp_one = self.mk(spp_one, spp_zero, spp_zero, spp_one);
-            spp_zero = self.mk(spp_zero, spp_zero, spp_zero, spp_zero);
         }
         spp_one
     }
 
     pub fn union(&mut self, a: SPP, b: SPP) -> SPP {
+        if self.is_zero(a) {
+            return b;
+        }
+        if self.is_zero(b) {
+            return a;
+        }
         // First, check the memo table
         if let Some(&result) = self.union_memo.get(&(a, b)) {
             return result;
@@ -317,6 +380,12 @@ impl SPPstore {
     }
 
     pub fn intersect(&mut self, a: SPP, b: SPP) -> SPP {
+        if self.is_zero(a) {
+            return a;
+        }
+        if self.is_zero(b) {
+            return b;
+        }
         // First, check the memo table
         if let Some(&result) = self.intersect_memo.get(&(a, b)) {
             return result;
@@ -335,6 +404,12 @@ impl SPPstore {
     }
 
     pub fn xor(&mut self, a: SPP, b: SPP) -> SPP {
+        if self.is_zero(a) {
+            return b;
+        }
+        if self.is_zero(b) {
+            return a;
+        }
         // First, check the memo table
         if let Some(&result) = self.xor_memo.get(&(a, b)) {
             return result;
@@ -353,6 +428,9 @@ impl SPPstore {
     }
 
     pub fn difference(&mut self, a: SPP, b: SPP) -> SPP {
+        if self.is_zero(a) || self.is_zero(b) {
+            return a;
+        }
         // First, check the memo table
         if let Some(&result) = self.difference_memo.get(&(a, b)) {
             return result;
@@ -389,25 +467,19 @@ impl SPPstore {
         res
     }
 
-    /// Checks if an SPP is zero (represents the empty relation)
-    pub fn is_zero(&mut self, spp: SPP) -> bool {
-        // First, check the memo table
-        if let Some(&result) = self.is_zero_memo.get(&spp) {
-            return result;
-        }
-        // Because we prefilled the memo with base cases,
-        // we now know that we've got a real node, so we don't need to handle 0 or 1 cases here.
-        let node = self.get(spp);
-        let x00_is_zero = self.is_zero(node.x00);
-        let x01_is_zero = self.is_zero(node.x01);
-        let x10_is_zero = self.is_zero(node.x10);
-        let x11_is_zero = self.is_zero(node.x11);
-        let result = x00_is_zero && x01_is_zero && x10_is_zero && x11_is_zero;
-        self.is_zero_memo.insert(spp, result);
-        result
+    /// Checks whether a valid SPP of at most `num_vars` fields is empty.
+    /// All such zero nodes are preallocated in a reserved index range.
+    pub fn is_zero(&self, spp: SPP) -> bool {
+        spp.0 == 0 || (spp.0 >= 2 && spp.0 - 2 < self.num_vars)
     }
 
     pub fn sequence(&mut self, a: SPP, b: SPP) -> SPP {
+        if self.is_zero(a) {
+            return a;
+        }
+        if self.is_zero(b) {
+            return b;
+        }
         // First, check the memo table
         if let Some(&result) = self.sequence_memo.get(&(a, b)) {
             return result;
@@ -494,8 +566,8 @@ impl SPPstore {
             return result;
         }
         let mut res = SPP::new(1);
-        let mut zero = SPP::new(0);
         for i in (0..self.num_vars).rev() {
+            let zero = self.zero_at_depth(self.num_vars - i - 1);
             if i == var {
                 if value {
                     res = self.mk(zero, zero, zero, res);
@@ -505,7 +577,6 @@ impl SPPstore {
             } else {
                 res = self.mk(res, zero, zero, res);
             }
-            zero = self.mk(zero, zero, zero, zero);
         }
         self.test_memo.insert((var, value), res);
         res
@@ -516,8 +587,8 @@ impl SPPstore {
             return result;
         }
         let mut res = SPP::new(1);
-        let mut zero = SPP::new(0);
         for i in (0..self.num_vars).rev() {
+            let zero = self.zero_at_depth(self.num_vars - i - 1);
             if i == var {
                 if value {
                     res = self.mk(zero, res, zero, res);
@@ -527,7 +598,6 @@ impl SPPstore {
             } else {
                 res = self.mk(res, zero, zero, res);
             }
-            zero = self.mk(zero, zero, zero, zero);
         }
         self.assign_memo.insert((var, value), res);
         res
@@ -536,12 +606,17 @@ impl SPPstore {
     /// Converts an SPP to an equivalent (dup-free) NetKAT expression.
     ///
     /// Case-splits on one field at a time, choosing the field with
-    /// [`SplitHeuristic::Lookahead(1)`](reduce::SplitHeuristic::Lookahead): in simple testing (the
-    /// `split_heuristics_compared` test), this gave most of the benefit of trying every split order,
-    /// for a small constant factor more time than the entropy heuristic alone. There is no sharing,
+    /// [`SplitHeuristic::LookaheadTop`](reduce::SplitHeuristic::LookaheadTop)
+    /// with depth 1 and width 5: complete trees for the five lowest-entropy
+    /// first splits, then keep the smallest expression. There is no sharing,
     /// so the result may be exponentially larger than the SPP.
-    pub fn to_expr(&mut self, spp: SPP) -> Exp {
-        reduce::to_expr_tree(self, spp, reduce::SplitHeuristic::Lookahead(1))
+    pub fn to_expr<'a>(&mut self, arena: &'a bumpalo::Bump, spp: SPP) -> Exp<'a> {
+        reduce::to_expr_tree(
+            arena,
+            self,
+            spp,
+            reduce::SplitHeuristic::LookaheadTop { depth: 1, width: 5 },
+        )
     }
 
     /// Computes all packets that can be produced from this SPP.
@@ -558,6 +633,9 @@ impl SPPstore {
 
     /// Flips the relation represented by this SPP.
     pub fn flip(&mut self, spp: SPP) -> SPP {
+        if self.is_zero(spp) {
+            return spp;
+        }
         if let Some(&result) = self.flip_memo.get(&spp) {
             return result;
         }
@@ -741,11 +819,84 @@ mod tests {
 
     const N: Var = 2;
 
-    /// Check that compiling `to_expr(spp)` gives back `spp`
+    /// Check that compiling `to_expr(arena, spp)` gives back `spp`
     fn check_to_expr_roundtrip(aut: &mut crate::aut::Aut, spp: SPP) {
-        let expr = aut.spp_store_mut().to_expr(spp);
-        let state = aut.expr_to_state(&expr);
-        assert_eq!(aut.epsilon(state), spp, "to_expr({spp}) = {expr}");
+        let arena = &bumpalo::Bump::new();
+        let expr = aut.spp_store_mut().to_expr(arena, spp);
+        let state = aut.expr_to_state(expr);
+        assert_eq!(aut.epsilon(state), spp, "to_expr(arena, {spp}) = {expr}");
+    }
+
+    #[test]
+    fn memo_reset_releases_caches_and_preserves_handles() {
+        fn operations(store: &mut SPPstore, a: SPP, b: SPP) -> (Vec<SPP>, Vec<SP>, bool) {
+            let fwd = store.fwd(a);
+            let bwd = store.bwd(a);
+            (
+                vec![
+                    store.union(a, b),
+                    store.intersect(a, b),
+                    store.xor(a, b),
+                    store.difference(a, b),
+                    store.sequence(a, b),
+                    store.star(a),
+                    store.complement(a),
+                    store.flip(a),
+                    store.ifwd(fwd),
+                    store.ibwd(bwd),
+                ],
+                vec![fwd, bwd],
+                store.is_zero(a),
+            )
+        }
+        let mut store = SPPstore::new(3);
+        let a = store.assign(0, true);
+        let b = store.test(1, false);
+        let expected = operations(&mut store, a, b);
+        let nodes = store.nodes.clone();
+        let canonical_count = store.hc.len();
+        store.memo_reset();
+        let empty = SPPstore::new(0);
+        assert_eq!(store.union_memo.len(), empty.union_memo.len());
+        assert_eq!(store.union_memo.capacity(), empty.union_memo.capacity());
+        assert_eq!(store.intersect_memo.len(), empty.intersect_memo.len());
+        assert_eq!(
+            store.intersect_memo.capacity(),
+            empty.intersect_memo.capacity()
+        );
+        assert_eq!(store.xor_memo.len(), empty.xor_memo.len());
+        assert_eq!(store.xor_memo.capacity(), empty.xor_memo.capacity());
+        assert_eq!(store.difference_memo.len(), empty.difference_memo.len());
+        assert_eq!(
+            store.difference_memo.capacity(),
+            empty.difference_memo.capacity()
+        );
+        assert_eq!(store.sequence_memo.len(), empty.sequence_memo.len());
+        assert_eq!(
+            store.sequence_memo.capacity(),
+            empty.sequence_memo.capacity()
+        );
+        assert_eq!(store.star_memo.len(), empty.star_memo.len());
+        assert_eq!(store.star_memo.capacity(), empty.star_memo.capacity());
+        assert_eq!(store.complement_memo.len(), empty.complement_memo.len());
+        assert_eq!(
+            store.complement_memo.capacity(),
+            empty.complement_memo.capacity()
+        );
+        assert_eq!(store.test_memo.len(), empty.test_memo.len());
+        assert_eq!(store.test_memo.capacity(), empty.test_memo.capacity());
+        assert_eq!(store.assign_memo.len(), empty.assign_memo.len());
+        assert_eq!(store.assign_memo.capacity(), empty.assign_memo.capacity());
+        assert_eq!(store.flip_memo.len(), empty.flip_memo.len());
+        assert_eq!(store.flip_memo.capacity(), empty.flip_memo.capacity());
+        assert_eq!(store.fwd_memo.len(), empty.fwd_memo.len());
+        assert_eq!(store.fwd_memo.capacity(), empty.fwd_memo.capacity());
+        assert_eq!(store.ifwd_memo.len(), empty.ifwd_memo.len());
+        assert_eq!(store.ifwd_memo.capacity(), empty.ifwd_memo.capacity());
+        assert_eq!(store.nodes, nodes);
+        assert_eq!(store.hc.len(), canonical_count);
+        assert_eq!(operations(&mut store, a, b), expected);
+        assert_eq!(store.nodes, nodes);
     }
 
     #[test]
@@ -768,23 +919,32 @@ mod tests {
 
     #[test]
     fn test_to_expr_simple() {
+        let arena = &bumpalo::Bump::new();
         let mut s = SPPstore::new(3);
-        assert_eq!(*s.to_expr(s.zero), Expr::Zero);
-        assert_eq!(*s.to_expr(s.one), Expr::One);
+        assert_eq!(*s.to_expr(arena, s.zero), Expr::Zero);
+        assert_eq!(*s.to_expr(arena, s.one), Expr::One);
         let t = s.test(1, true);
-        assert_eq!(s.to_expr(t), Expr::test(1, true));
+        assert_eq!(s.to_expr(arena, t), Expr::test(arena, 1, true));
         let a = s.assign(2, false);
-        assert_eq!(s.to_expr(a), Expr::assign(2, false));
+        assert_eq!(s.to_expr(arena, a), Expr::assign(arena, 2, false));
         // A test that only lets one value through
         let t0 = s.test(0, false);
         let t0_a2 = s.sequence(t0, a);
-        let expected = Expr::sequence(Expr::test(0, false), Expr::assign(2, false));
-        assert_eq!(s.to_expr(t0_a2), expected);
+        let expected = Expr::sequence(
+            arena,
+            Expr::test(arena, 0, false),
+            Expr::assign(arena, 2, false),
+        );
+        assert_eq!(s.to_expr(arena, t0_a2), expected);
         // An assignment after a test on the same field
         let a0 = s.assign(0, true);
         let t0_a0 = s.sequence(t0, a0);
-        let expected = Expr::sequence(Expr::test(0, false), Expr::assign(0, true));
-        assert_eq!(s.to_expr(t0_a0), expected);
+        let expected = Expr::sequence(
+            arena,
+            Expr::test(arena, 0, false),
+            Expr::assign(arena, 0, true),
+        );
+        assert_eq!(s.to_expr(arena, t0_a0), expected);
     }
 
     /// Test that `naive_forward` and `fwd` behave the same
@@ -944,6 +1104,112 @@ mod tests {
     }
 
     #[test]
+    fn zero_indices_survive_allocation_reset_and_clone() {
+        for fields in 0..=6 {
+            let mut store = SPPstore::new(fields);
+            if fields > 0 {
+                store.assign(0, true);
+                store.test(fields - 1, false);
+            }
+            store.memo_reset();
+            let mut store = store.clone();
+            let mut zero = SPP::new(0);
+            assert_eq!(store.zero_at_depth(0), zero);
+            assert!(store.is_zero(zero));
+            assert!(!store.is_zero(SPP::new(1)));
+            for depth in 1..=fields {
+                zero = store.mk(zero, zero, zero, zero);
+                assert_eq!(zero, SPP::new(depth + 1));
+                assert_eq!(store.zero_at_depth(depth), zero);
+                assert!(store.is_zero(zero));
+            }
+            assert_eq!(zero, store.zero);
+            // Every node outside the reserved range has a nonempty branch.
+            for index in fields + 2..store.nodes.len() as u32 + 2 {
+                let node = store.get(SPP::new(index));
+                assert!(
+                    ![node.x00, node.x01, node.x10, node.x11]
+                        .into_iter()
+                        .all(|child| store.is_zero(child))
+                );
+                assert!(!store.is_zero(SPP::new(index)));
+            }
+        }
+    }
+
+    #[test]
+    fn zero_conversions_preserve_suffix_depth_without_filling_caches() {
+        for fields in 0..=6 {
+            let mut store = SPPstore::new(fields);
+            store.memo_reset();
+            for depth in 0..=fields {
+                let spp_zero = store.zero_at_depth(depth);
+                let sp_zero = store.sp.zero_at_depth(depth);
+                assert_eq!(spp_zero.0, sp_zero.0);
+                assert_eq!(store.fwd(spp_zero), sp_zero);
+                assert_eq!(store.bwd(spp_zero), sp_zero);
+                assert_eq!(store.ifwd(sp_zero), spp_zero);
+                assert_eq!(store.ibwd(sp_zero), spp_zero);
+            }
+            assert_eq!(store.fwd_memo.len(), 2);
+            assert_eq!(store.ifwd_memo.len(), 2);
+            assert_eq!(store.flip_memo.len(), 2);
+        }
+    }
+
+    #[test]
+    fn zero_shortcuts_preserve_suffix_depth_without_filling_caches() {
+        let mut store = SPPstore::new(6);
+        let sizes = |s: &SPPstore| {
+            (
+                s.intersect_memo.len(),
+                s.xor_memo.len(),
+                s.difference_memo.len(),
+                s.sequence_memo.len(),
+                s.flip_memo.len(),
+            )
+        };
+        let initial = sizes(&store);
+        let mut identity = SPP::new(1);
+        for depth in 0..=store.num_vars() {
+            let zero = store.zero_at_depth(depth);
+            assert_eq!(store.intersect(zero, identity), zero);
+            assert_eq!(store.intersect(identity, zero), zero);
+            assert_eq!(store.xor(zero, identity), identity);
+            assert_eq!(store.xor(identity, zero), identity);
+            assert_eq!(store.difference(zero, identity), zero);
+            assert_eq!(store.difference(identity, zero), identity);
+            assert_eq!(store.sequence(zero, identity), zero);
+            assert_eq!(store.sequence(identity, zero), zero);
+            assert_eq!(store.flip(zero), zero);
+            assert_eq!(sizes(&store), initial);
+            if depth < store.num_vars() {
+                identity = store.mk(identity, zero, zero, identity);
+            }
+        }
+    }
+
+    #[test]
+    fn union_shortcuts_zero_branches_without_memoizing_them() {
+        let mut store = SPPstore::new(2);
+        let z = store.zero_at_depth(1);
+        let one = store.mk(SPP::new(1), SPP::new(0), SPP::new(0), SPP::new(1));
+        let top = store.mk(SPP::new(1), SPP::new(1), SPP::new(1), SPP::new(1));
+        let a = store.mk(one, z, z, z);
+        let b = store.mk(z, top, z, z);
+        let expected = store.mk(one, top, z, z);
+        let entries = store.union_memo.len();
+        assert_eq!(store.union(store.zero, a), a);
+        assert_eq!(store.union(a, store.zero), a);
+        assert_eq!(store.union_memo.len(), entries);
+        assert_eq!(store.union(a, b), expected);
+        // Only the root pair needs computation; every child pair contains zero.
+        assert_eq!(store.union_memo.len(), entries + 1);
+        assert_eq!(store.union(b, a), expected);
+        assert_eq!(store.union_memo.len(), entries + 2);
+    }
+
+    #[test]
     fn test_is_zero() {
         let mut s = SPPstore::new(N);
 
@@ -969,6 +1235,36 @@ mod tests {
             let is_zero_result = s.is_zero(spp);
             // An SPP is zero if it equals the zero SPP
             assert_eq!(is_zero_result, spp == s.zero);
+        }
+    }
+    #[test]
+    fn import_keeps_only_reachable_nodes_and_preserves_handles_semantically() {
+        let mut source = SPPstore::new(6);
+        let keep = source.assign(0, true);
+        let mut garbage = source.one;
+        for bits in 0..64 {
+            let mut cell = source.top;
+            for field in 0..6 {
+                let test = source.test(field, bits & (1 << field) != 0);
+                cell = source.intersect(cell, test);
+            }
+            garbage = source.union(garbage, cell);
+        }
+        let mut target = SPPstore::new(6);
+        let roots = target.import(&source, &[keep, keep, source.zero, source.top]);
+        assert_eq!(roots[0], roots[1]);
+        assert_eq!(roots[2], target.zero);
+        assert_eq!(roots[3], target.top);
+        assert!(target.nodes.len() < source.nodes.len());
+        for input in 0..64 {
+            for output in 0..64 {
+                let input: Vec<_> = (0..6).map(|f| input & (1 << f) != 0).collect();
+                let output: Vec<_> = (0..6).map(|f| output & (1 << f) != 0).collect();
+                assert_eq!(
+                    source.accepts(keep, &input, &output),
+                    target.accepts(roots[0], &input, &output)
+                );
+            }
         }
     }
 }

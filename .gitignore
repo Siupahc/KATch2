@@ -1,12 +1,7 @@
-/target
+target
 fast-stackat.md
-.cursorrules
-out/
+out
 .DS_Store
-.cursorrules
-CLAUDE.md
-# AI assistant data
-ai_data/
 .claude
 
 # API keys
@@ -16,3 +11,7 @@ api_keys.json
 /.idea
 /experiments/gml
 experiments/gml.tar.gz
+scripts
+*.txt
+Dockerfile
+.dockerignore
