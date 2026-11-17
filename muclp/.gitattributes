@@ -1,3 +1,4 @@
 # run_coar.sh is executed by bash (WSL / Linux): it must keep LF line endings
 *.sh text eol=lf
 *.hes text eol=lf
+*.smt2 text eol=lf

@@ -1,0 +1,40 @@
+// Hospital example (hospital_test.pdf, section 2 + step 7 anti-spoofing), for KATch2-synth.
+//
+//   Internet -pt1-> G -2---1- S -2---1- M   (imaging, vulnerable FTP server)
+//                             S -3---1- W   (workstation)
+//                             S -4---1- I   (inspection)
+//
+// Fields (bit ranges):  sw = x[0..3]   pt = x[3..6]   dst = x[6..9]   typ = x[9..11]
+//   sw, dst: G=1 S=2 M=3 W=4 I=5      typ: ftp=1, anything else = not ftp
+//
+// Expected: hS = sw=S; (dst=M; typ!=ftp; pt:=2 + dst=W; pt:=3)
+
+hole hS
+
+def ingress = x[0..3]~1; x[3..6]~1
+def egress  = x[0..3]~3 + x[0..3]~4
+
+// t: one term per link and direction
+def topo =
+    (x[0..3]~1; x[3..6]~2; x[0..3]:=2; x[3..6]:=1) +
+    (x[0..3]~2; x[3..6]~1; x[0..3]:=1; x[3..6]:=2) +
+    (x[0..3]~2; x[3..6]~2; x[0..3]:=3; x[3..6]:=1) +
+    (x[0..3]~3; x[3..6]~1; x[0..3]:=2; x[3..6]:=2) +
+    (x[0..3]~2; x[3..6]~3; x[0..3]:=4; x[3..6]:=1) +
+    (x[0..3]~4; x[3..6]~1; x[0..3]:=2; x[3..6]:=3) +
+    (x[0..3]~2; x[3..6]~4; x[0..3]:=5; x[3..6]:=1) +
+    (x[0..3]~5; x[3..6]~1; x[0..3]:=2; x[3..6]:=4)
+
+// p[X]: G sends out on port 2, I on port 1, S runs the hole
+def pol = (x[0..3]~1; x[3..6]:=2) + (x[0..3]~5; x[3..6]:=1) + (x[0..3]~2; hS)
+
+def net = ingress; (pol; topo)*; egress
+
+// N1 (lower bound): traffic for W, and non-FTP traffic for M, gets delivered
+assert ingress; (x[6..9]~4; x[0..3]:=4 + x[6..9]~3; !(x[9..11]~1); x[0..3]:=3) <= net
+
+// N2 (upper bound): FTP never reaches M
+assert net; x[0..3]~3; x[9..11]~1 <= 0
+
+// N3 + step 7 (anti-spoofing): S just forwards, and only rewrites the port
+assert hS <= x[0..3]~2; (x[3..6]:=0 + x[3..6]:=1 + x[3..6]:=2 + x[3..6]:=3 + x[3..6]:=4 + x[3..6]:=5 + x[3..6]:=6 + x[3..6]:=7)

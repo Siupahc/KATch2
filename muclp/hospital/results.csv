@@ -1,0 +1,27 @@
+tool,file,config,rep,verdict,ms,solution
+katch2,hospital_nospoof.nksynth,default,1,timeout,300000,
+katch2,hospital.nksynth,default,1,timeout,300000,
+pcsat,hospital_opt.smt2,pcsat_tbq_sol,1,sat,84713,(define-fun |X| ((|x1| Int) (|x2| Int) (|x3| Int) (|x4| Int)) Bool (and (or (and (and (and (>= (- 1) (- |x1| |x2|)) (= |x2| 3)) (>= |x1| 1)) (or (>= |x3| 22) (<= |x3| 20))) (and (and (= |x2| 4) (<= |x1| 2)) (>= |x1| 1))) (or (and (= |x4| 3) (>= |x2| 4)) (and (= |x4| 2) (<= |x2| 3)))))
+pcsat,hospital_opt.smt2,pcsat_tbq_sol,2,sat,217192,(define-fun |X| ((|x1| Int) (|x2| Int) (|x3| Int) (|x4| Int)) Bool (and (or (and (and (and (<= 1 (- |x2| |x1|)) (<= (- 2) (- |x1| |x2|))) (= |x2| 3)) (or (>= |x3| 22) (<= |x3| 20))) (and (and (and (<= 1 (- |x2| |x1|)) (= |x2| 4)) (>= |x1| 1)) (or (>= |x1| 3) (<= |x1| 1)))) (or (and (= |x4| 3) (>= |x2| 4)) (and (= |x4| 2) (<= |x2| 3)))))
+pcsat,hospital_opt.smt2,pcsat_tbq_sol,3,sat,141002,(define-fun |X| ((|x1| Int) (|x2| Int) (|x3| Int) (|x4| Int)) Bool (and (or (and (and (and (>= (- 1) (- |x1| |x2|)) (= |x2| 4)) (>= |x1| 1)) (or (>= |x1| 3) (<= |x1| 1))) (and (and (and (>= (- 1) (- |x1| |x2|)) (= |x2| 3)) (>= |x1| 1)) (or (>= |x3| 22) (<= |x3| 20)))) (or (and (= |x4| 3) (= |x2| 4)) (and (= |x4| 2) (<= |x2| 3)))))
+pcsat,hospital_opt.smt2,pcsat_tbq_sol,4,sat,123560,(define-fun |X| ((|x1| Int) (|x2| Int) (|x3| Int) (|x4| Int)) Bool (and (or (and (and (and (>= (- 1) (- |x1| |x2|)) (>= |x2| 4)) (>= |x1| 1)) (or (>= |x1| 3) (<= |x1| 1))) (and (and (and (>= (- 1) (- |x1| |x2|)) (= |x2| 3)) (>= |x1| 1)) (or (>= |x3| 22) (<= |x3| 20)))) (or (and (= |x4| 3) (= |x2| 4)) (and (= |x4| 2) (<= |x2| 3)))))
+pcsat,hospital_opt.smt2,pcsat_ppm_tbq_ar_sol,1,sat,253089,(define-fun |X| ((|x1| Int) (|x2| Int) (|x3| Int) (|x4| Int)) Bool (and (and (>= 1 (- |x2| |x4|)) (>= (- 1) (- |x4| |x2|))) (or (and (and (and (>= (- 1) (- |x1| |x2|)) (= |x2| 4)) (>= |x1| 1)) (or (>= |x1| 3) (<= |x1| 1))) (and (and (and (= |x2| 3) (<= |x1| 2)) (>= |x1| 1)) (or (>= |x3| 22) (<= |x3| 20))))))
+pcsat,hospital_opt.smt2,pcsat_ppm_tbq_ar_sol,2,timeout,312390,
+pcsat,hospital_opt.smt2,pcsat_ppm_tbq_ar_sol,3,timeout,312387,
+pcsat,hospital_opt.smt2,pcsat_ppm_tbq_ar_sol,4,timeout,312392,
+pcsat,hospital_bfs.smt2,pcsat_tbq_sol,1,timeout,312382,
+pcsat,hospital_bfs.smt2,pcsat_tbq_sol,2,timeout,312378,
+pcsat,hospital_bfs.smt2,pcsat_tbq_sol,3,timeout,312377,
+pcsat,hospital_bfs.smt2,pcsat_tbq_sol,4,timeout,312379,
+pcsat,hospital_bfs.smt2,pcsat_ppm_tbq_ar_sol,1,timeout,314824,
+pcsat,hospital_bfs.smt2,pcsat_ppm_tbq_ar_sol,2,timeout,313265,
+pcsat,hospital_bfs.smt2,pcsat_ppm_tbq_ar_sol,3,timeout,311587,
+pcsat,hospital_bfs.smt2,pcsat_ppm_tbq_ar_sol,4,timeout,311494,
+pcsat,hospital_wf.smt2,pcsat_tbq_sol,1,timeout,311568,
+pcsat,hospital_wf.smt2,pcsat_tbq_sol,2,timeout,309871,
+pcsat,hospital_wf.smt2,pcsat_tbq_sol,3,timeout,309871,
+pcsat,hospital_wf.smt2,pcsat_tbq_sol,4,timeout,309872,
+pcsat,hospital_wf.smt2,pcsat_ppm_tbq_ar_sol,1,timeout,309884,
+pcsat,hospital_wf.smt2,pcsat_ppm_tbq_ar_sol,2,timeout,309884,
+pcsat,hospital_wf.smt2,pcsat_ppm_tbq_ar_sol,3,timeout,309886,
+pcsat,hospital_wf.smt2,pcsat_ppm_tbq_ar_sol,4,timeout,309885,
