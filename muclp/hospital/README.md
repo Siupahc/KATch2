@@ -19,6 +19,7 @@ Expected: `X = sw=S ; (dst=M ; typ!=ftp ; pt:=2 + dst=W ; pt:=3)`.
 | `hospital_wf.smt2` | PCSat | `X, R, D` + `W` free (`declare-wfp`), `exists p'` in a head, anti-spoofing on |
 | `hospital_bfs.smt2` | PCSat | same, `W` fixed by BFS distances |
 | `hospital_opt.smt2` | PCSat | same as `bfs`, with the structure pushed into the encoding (see below) |
+| `hospital_generic.smt2` | PCSat | generic translation: relations on `(p, p')`, `W_` free (times out) |
 | `hospital_nospoof.nksynth` | KATch2 | N1–N3 + anti-spoofing: **same spec as the three `.smt2`** |
 | `hospital.nksynth` | KATch2 | N1–N3 with `X <= sw=S; T; sw:=S` (S may also rewrite `dst`/`typ`) |
 | `hospital.expected.nksol` | KATch2 | the expected hole, for `nksynth --check` |
@@ -78,6 +79,7 @@ Timeout on both files (300 s; no answer after ~25 min and 2.5 GB either). I firs
 | `hospital_opt.smt2` | `pcsat_ppm_tbq_ar` | 1/4 sat (253 s) |
 | `hospital_bfs.smt2` | both | 0/4 |
 | `hospital_wf.smt2` | both | 0/4 |
+| `hospital_generic.smt2` | both | 0/4 |
 
 Shorter runs (180 s) of `wf` / `bfs` with `pcsat_tb`, `tb_ar`, `tbq_ar`, `dt`, `dt_lazy`,
 `dt_svm`: all timeouts.
