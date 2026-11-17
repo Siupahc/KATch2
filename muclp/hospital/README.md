@@ -68,10 +68,7 @@ for the `T` version (the hole also does arbitrary things on packets that never r
 
 ### KATch2-synth, previous version (`fd6dad2`)
 
-Timeout on both files (300 s; no answer after ~25 min and 2.5 GB either). CEGIS iterations got
-slower and slower (300 → 3 s, 1000 → 38 s, 2000 → 184 s). The blocking constraint was the
-lower bound N1 through the star (N1+N3 alone: no answer in 120 s, SAT in 0.27 s with
-`--no-clause-merge`).
+Timeout on both files (300 s; no answer after ~25 min and 2.5 GB either). I first forgot to `git pull` to get the latest version, so I thought PCSat was faster, but the current optimized version is miles ahead.
 
 ### PCSat (300 s timeout, 4 runs per line, 12 in parallel)
 
