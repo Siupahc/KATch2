@@ -1,0 +1,6 @@
+instance,tool,preset,config,rep,verdict,ms,check
+hospital_nospoof,katch2,-,default,1,sat,2872,
+hospital_nospoof,pcsat,paths,pcsat_tbq_sol,1,sat,3049,OK [skip-check:Domain of `hS` has 4194304 > 262144 tuples; use Z3 model verification instead]
+hospital_nospoof,pcsat,paths,pcsat_tbq_sol,2,sat,11842,OK [skip-check:Domain of `hS` has 4194304 > 262144 tuples; use Z3 model verification instead]
+hospital_nospoof,pcsat,all,pcsat_tbq_sol,1,sat,181,OK [skip-check:Hole `hS` missing from PCSat output]
+hospital_nospoof,pcsat,all,pcsat_tbq_sol,2,sat,178,OK [skip-check:Hole `hS` missing from PCSat output]

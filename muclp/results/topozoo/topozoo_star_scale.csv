@@ -1,0 +1,13 @@
+instance,tool,preset,config,rep,verdict,ms,check
+"Heanet_star (V=7,E=13)",katch2,-,default,1,sat,101,
+"Abilene_star (V=11,E=14)",katch2,-,default,1,sat,78,
+"Aarnet_star (V=19,E=24)",katch2,-,default,1,sat,75,
+"Heanet_star (V=7,E=13)",pcsat,generic,pcsat_tbq_nopre_sol,1,timeout,45048,
+"Heanet_star (V=7,E=13)",pcsat,paths,pcsat_tbq_nopre_sol,1,timeout,45056,
+"Heanet_star (V=7,E=13)",pcsat,all,pcsat_tbq_nopre_sol,1,timeout,45058,
+"Abilene_star (V=11,E=14)",pcsat,generic,pcsat_tbq_nopre_sol,1,timeout,45023,
+"Abilene_star (V=11,E=14)",pcsat,paths,pcsat_tbq_nopre_sol,1,timeout,45066,
+"Abilene_star (V=11,E=14)",pcsat,all,pcsat_tbq_nopre_sol,1,timeout,45117,
+"Aarnet_star (V=19,E=24)",pcsat,generic,pcsat_tbq_nopre_sol,1,timeout,45265,
+"Aarnet_star (V=19,E=24)",pcsat,paths,pcsat_tbq_nopre_sol,1,timeout,46535,
+"Aarnet_star (V=19,E=24)",pcsat,all,pcsat_tbq_nopre_sol,1,timeout,46154,

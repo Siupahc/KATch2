@@ -1,0 +1,3 @@
+tool,file,config,rep,verdict,ms,solution
+pcsat,hospital_generic_factored.smt2,pcsat_tbq_sol,1,error,98292,
+pcsat,hospital_generic_factored.smt2,pcsat_tbq_nopre_sol,1,error,72911,

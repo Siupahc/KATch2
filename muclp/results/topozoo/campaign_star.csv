@@ -1,0 +1,79 @@
+instance,tool,preset,config,rep,verdict,ms,check
+hospital_nospoof,katch2,-,default,1,sat,17,
+"Arpanet196912_star (V=4,E=4)",katch2,-,default,1,sat,4,
+"Layer42_star (V=6,E=7)",katch2,-,default,1,sat,4,
+"Heanet_star (V=7,E=13)",katch2,-,default,1,sat,5,
+"Nordu2005_star (V=9,E=10)",katch2,-,default,1,sat,4,
+"Abilene_star (V=11,E=14)",katch2,-,default,1,sat,4,
+"Kreonet_star (V=13,E=12)",katch2,-,default,1,sat,4,
+"HostwayInternational_star (V=16,E=21)",katch2,-,default,1,sat,5,
+"Aarnet_star (V=19,E=24)",katch2,-,default,1,sat,6,
+"Oxford_star (V=20,E=26)",katch2,-,default,1,sat,6,
+"Garr199905_star (V=23,E=25)",katch2,-,default,1,sat,6,
+"Karen_star (V=25,E=30)",katch2,-,default,1,sat,7,
+"WideJpn_star (V=30,E=33)",katch2,-,default,1,sat,8,
+hospital_nospoof,pcsat,generic,pcsat_tbq_sol,1,timeout,25016,
+hospital_nospoof,pcsat,noexists,pcsat_tbq_sol,1,timeout,25084,
+hospital_nospoof,pcsat,bfs,pcsat_tbq_sol,1,timeout,25240,
+hospital_nospoof,pcsat,paths,pcsat_tbq_sol,1,sat,3132,OK
+hospital_nospoof,pcsat,all,pcsat_tbq_sol,1,sat,262,OK
+"Arpanet196912_star (V=4,E=4)",pcsat,generic,pcsat_tbq_sol,1,timeout,25014,
+"Arpanet196912_star (V=4,E=4)",pcsat,noexists,pcsat_tbq_sol,1,timeout,25057,
+"Arpanet196912_star (V=4,E=4)",pcsat,bfs,pcsat_tbq_sol,1,timeout,25260,
+"Arpanet196912_star (V=4,E=4)",pcsat,paths,pcsat_tbq_sol,1,sat,383,OK
+"Arpanet196912_star (V=4,E=4)",pcsat,all,pcsat_tbq_sol,1,sat,131,OK
+"Layer42_star (V=6,E=7)",pcsat,generic,pcsat_tbq_sol,1,timeout,25131,
+"Layer42_star (V=6,E=7)",pcsat,noexists,pcsat_tbq_sol,1,timeout,25100,
+"Layer42_star (V=6,E=7)",pcsat,bfs,pcsat_tbq_sol,1,timeout,25065,
+"Layer42_star (V=6,E=7)",pcsat,paths,pcsat_tbq_sol,1,sat,298,OK
+"Layer42_star (V=6,E=7)",pcsat,all,pcsat_tbq_sol,1,sat,229,OK
+"Heanet_star (V=7,E=13)",pcsat,generic,pcsat_tbq_sol,1,timeout,25073,
+"Heanet_star (V=7,E=13)",pcsat,noexists,pcsat_tbq_sol,1,timeout,25044,
+"Heanet_star (V=7,E=13)",pcsat,bfs,pcsat_tbq_sol,1,timeout,25046,
+"Heanet_star (V=7,E=13)",pcsat,paths,pcsat_tbq_sol,1,sat,642,OK
+"Heanet_star (V=7,E=13)",pcsat,all,pcsat_tbq_sol,1,sat,147,OK
+"Nordu2005_star (V=9,E=10)",pcsat,generic,pcsat_tbq_sol,1,timeout,25018,
+"Nordu2005_star (V=9,E=10)",pcsat,noexists,pcsat_tbq_sol,1,timeout,25046,
+"Nordu2005_star (V=9,E=10)",pcsat,bfs,pcsat_tbq_sol,1,timeout,25296,
+"Nordu2005_star (V=9,E=10)",pcsat,paths,pcsat_tbq_sol,1,sat,944,OK
+"Nordu2005_star (V=9,E=10)",pcsat,all,pcsat_tbq_sol,1,sat,156,OK
+"Abilene_star (V=11,E=14)",pcsat,generic,pcsat_tbq_sol,1,timeout,25016,
+"Abilene_star (V=11,E=14)",pcsat,noexists,pcsat_tbq_sol,1,timeout,25101,
+"Abilene_star (V=11,E=14)",pcsat,bfs,pcsat_tbq_sol,1,timeout,25081,
+"Abilene_star (V=11,E=14)",pcsat,paths,pcsat_tbq_sol,1,sat,788,OK
+"Abilene_star (V=11,E=14)",pcsat,all,pcsat_tbq_sol,1,sat,174,OK
+"Kreonet_star (V=13,E=12)",pcsat,generic,pcsat_tbq_sol,1,timeout,25016,
+"Kreonet_star (V=13,E=12)",pcsat,noexists,pcsat_tbq_sol,1,timeout,25049,
+"Kreonet_star (V=13,E=12)",pcsat,bfs,pcsat_tbq_sol,1,timeout,25054,
+"Kreonet_star (V=13,E=12)",pcsat,paths,pcsat_tbq_sol,1,sat,310,OK
+"Kreonet_star (V=13,E=12)",pcsat,all,pcsat_tbq_sol,1,sat,150,OK
+"HostwayInternational_star (V=16,E=21)",pcsat,generic,pcsat_tbq_sol,1,timeout,25020,
+"HostwayInternational_star (V=16,E=21)",pcsat,noexists,pcsat_tbq_sol,1,timeout,25056,
+"HostwayInternational_star (V=16,E=21)",pcsat,bfs,pcsat_tbq_sol,1,timeout,25059,
+"HostwayInternational_star (V=16,E=21)",pcsat,paths,pcsat_tbq_sol,1,sat,2041,OK
+"HostwayInternational_star (V=16,E=21)",pcsat,all,pcsat_tbq_sol,1,sat,246,OK
+"Aarnet_star (V=19,E=24)",pcsat,generic,pcsat_tbq_sol,1,timeout,25020,
+"Aarnet_star (V=19,E=24)",pcsat,noexists,pcsat_tbq_sol,1,timeout,25047,
+"Aarnet_star (V=19,E=24)",pcsat,bfs,pcsat_tbq_sol,1,timeout,25328,
+"Aarnet_star (V=19,E=24)",pcsat,paths,pcsat_tbq_sol,1,sat,1439,OK
+"Aarnet_star (V=19,E=24)",pcsat,all,pcsat_tbq_sol,1,sat,257,OK
+"Oxford_star (V=20,E=26)",pcsat,generic,pcsat_tbq_sol,1,timeout,25079,
+"Oxford_star (V=20,E=26)",pcsat,noexists,pcsat_tbq_sol,1,timeout,25046,
+"Oxford_star (V=20,E=26)",pcsat,bfs,pcsat_tbq_sol,1,timeout,25376,
+"Oxford_star (V=20,E=26)",pcsat,paths,pcsat_tbq_sol,1,sat,1586,OK
+"Oxford_star (V=20,E=26)",pcsat,all,pcsat_tbq_sol,1,sat,188,OK
+"Garr199905_star (V=23,E=25)",pcsat,generic,pcsat_tbq_sol,1,timeout,25026,
+"Garr199905_star (V=23,E=25)",pcsat,noexists,pcsat_tbq_sol,1,timeout,25048,
+"Garr199905_star (V=23,E=25)",pcsat,bfs,pcsat_tbq_sol,1,timeout,25036,
+"Garr199905_star (V=23,E=25)",pcsat,paths,pcsat_tbq_sol,1,sat,382,OK
+"Garr199905_star (V=23,E=25)",pcsat,all,pcsat_tbq_sol,1,sat,161,OK
+"Karen_star (V=25,E=30)",pcsat,generic,pcsat_tbq_sol,1,timeout,25095,
+"Karen_star (V=25,E=30)",pcsat,noexists,pcsat_tbq_sol,1,timeout,25057,
+"Karen_star (V=25,E=30)",pcsat,bfs,pcsat_tbq_sol,1,timeout,25042,
+"Karen_star (V=25,E=30)",pcsat,paths,pcsat_tbq_sol,1,sat,5195,OK
+"Karen_star (V=25,E=30)",pcsat,all,pcsat_tbq_sol,1,sat,377,OK
+"WideJpn_star (V=30,E=33)",pcsat,generic,pcsat_tbq_sol,1,timeout,25017,
+"WideJpn_star (V=30,E=33)",pcsat,noexists,pcsat_tbq_sol,1,timeout,25051,
+"WideJpn_star (V=30,E=33)",pcsat,bfs,pcsat_tbq_sol,1,timeout,25381,
+"WideJpn_star (V=30,E=33)",pcsat,paths,pcsat_tbq_sol,1,sat,1770,OK
+"WideJpn_star (V=30,E=33)",pcsat,all,pcsat_tbq_sol,1,sat,210,OK

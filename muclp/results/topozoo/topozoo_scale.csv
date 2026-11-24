@@ -1,0 +1,26 @@
+instance,tool,preset,config,rep,verdict,ms,check
+Basnet-unsat,katch2,-,default,1,unsat,1763,
+"Heanet (V=7,E=13)",katch2,-,default,1,sat,84,
+"Abilene (V=11,E=14)",katch2,-,default,1,sat,87,
+"Aarnet (V=19,E=24)",katch2,-,default,1,sat,85,
+Karen,katch2,-,default,1,sat,84,
+Basnet-unsat,pcsat,generic,pcsat_tbq_sol,1,unsat,254,OK
+Basnet-unsat,pcsat,generic,pcsat_tbq_nopre_sol,1,timeout,45042,
+Basnet-unsat,pcsat,all,pcsat_tbq_sol,1,unsat,101,OK
+Basnet-unsat,pcsat,all,pcsat_tbq_nopre_sol,1,unsat,92,OK
+"Heanet (V=7,E=13)",pcsat,generic,pcsat_tbq_sol,1,sat,833,OK [skip-check:Domain of `h1` has 1048576 > 262144 tuples; use Z3 model verification instead]
+"Heanet (V=7,E=13)",pcsat,generic,pcsat_tbq_nopre_sol,1,sat,1604,OK [skip-check:Domain of `h1` has 1048576 > 262144 tuples; use Z3 model verification instead]
+"Heanet (V=7,E=13)",pcsat,all,pcsat_tbq_sol,1,sat,136,OK [--check:valid]
+"Heanet (V=7,E=13)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,157,OK [--check:valid]
+"Abilene (V=11,E=14)",pcsat,generic,pcsat_tbq_sol,1,sat,1273,OK [skip-check:Domain of `h1` has 4194304 > 262144 tuples; use Z3 model verification instead]
+"Abilene (V=11,E=14)",pcsat,generic,pcsat_tbq_nopre_sol,1,sat,3138,OK [skip-check:Domain of `h1` has 4194304 > 262144 tuples; use Z3 model verification instead]
+"Abilene (V=11,E=14)",pcsat,all,pcsat_tbq_sol,1,sat,185,OK [skip-check:Domain of `h1` has 524288 > 262144 tuples; use Z3 model verification instead]
+"Abilene (V=11,E=14)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,181,OK [skip-check:Domain of `h1` has 524288 > 262144 tuples; use Z3 model verification instead]
+"Aarnet (V=19,E=24)",pcsat,generic,pcsat_tbq_sol,1,sat,4065,OK [skip-check:Domain of `h1` has 268435456 > 262144 tuples; use Z3 model verification instead]
+"Aarnet (V=19,E=24)",pcsat,generic,pcsat_tbq_nopre_sol,1,sat,6611,OK [skip-check:Domain of `h1` has 268435456 > 262144 tuples; use Z3 model verification instead]
+"Aarnet (V=19,E=24)",pcsat,all,pcsat_tbq_sol,1,sat,226,OK [skip-check:Domain of `h1` has 16777216 > 262144 tuples; use Z3 model verification instead]
+"Aarnet (V=19,E=24)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,264,OK [skip-check:Domain of `h1` has 16777216 > 262144 tuples; use Z3 model verification instead]
+Karen,pcsat,generic,pcsat_tbq_sol,1,sat,16249,OK [skip-check:Domain of `h1` has 268435456 > 262144 tuples; use Z3 model verification instead]
+Karen,pcsat,generic,pcsat_tbq_nopre_sol,1,sat,16798,OK [skip-check:Domain of `h1` has 268435456 > 262144 tuples; use Z3 model verification instead]
+Karen,pcsat,all,pcsat_tbq_sol,1,sat,550,OK [skip-check:Domain of `h1` has 16777216 > 262144 tuples; use Z3 model verification instead]
+Karen,pcsat,all,pcsat_tbq_nopre_sol,1,sat,3146,OK [skip-check:Domain of `h1` has 16777216 > 262144 tuples; use Z3 model verification instead]

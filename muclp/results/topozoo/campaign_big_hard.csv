@@ -1,0 +1,15 @@
+instance,tool,preset,config,rep,verdict,ms,check,translation_ms
+"Abilene (V=11,E=14)",katch2,-,default,1,sat,7,,
+"Abilene (V=11,E=14)",pcsat,all,pcsat_tbq_sol,1,sat,1926,OK,599
+"Karen (V=25,E=30)",katch2,-,default,1,sat,17,,
+"Karen (V=25,E=30)",pcsat,all,pcsat_tbq_sol,1,sat,9455,OK,2713
+"Geant2012 (V=40,E=61)",katch2,-,default,1,sat,22,,
+"Geant2012 (V=40,E=61)",pcsat,all,pcsat_tbq_sol,1,sat,14405,OK,11050
+"Esnet (V=68,E=92)",katch2,-,default,1,sat,40,,
+"Esnet (V=68,E=92)",pcsat,all,pcsat_tbq_sol,1,sat,14704,OK,25783
+"Interoute (V=110,E=158)",katch2,-,default,1,sat,84,,
+"Interoute (V=110,E=158)",pcsat,all,pcsat_tbq_sol,1,translation_timeout,,,120000
+"Colt (V=153,E=191)",katch2,-,default,1,sat,140,,
+"Colt (V=153,E=191)",pcsat,all,pcsat_tbq_sol,1,translation_timeout,,,120000
+"Cogentco (V=197,E=245)",katch2,-,default,1,sat,286,,
+"Cogentco (V=197,E=245)",pcsat,all,pcsat_tbq_sol,1,translation_timeout,,,120000

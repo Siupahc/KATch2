@@ -1,0 +1,3 @@
+tool,file,config,rep,verdict,ms,solution
+pcsat,hospital_generic.smt2,pcsat_tbq_nopre_sol,1,timeout,307444,
+pcsat,/tmp/hospital_witness.smt2,pcsat_tbq_nopre_sol,1,timeout,307444,

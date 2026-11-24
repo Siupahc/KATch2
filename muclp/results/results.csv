@@ -1,0 +1,33 @@
+file,check,kind,katch2,muval/direct,mustrat/direct
+01_axioms,mod_then_test,equiv,true 0.04s,true 0.26s ✓,true 0.04s ✓
+01_axioms,test_then_mod,equiv,true 0.04s,true 0.13s ✓,true 0.03s ✓
+01_axioms,mod_mod,equiv,true 0.03s,true 0.13s ✓,true 0.03s ✓
+01_axioms,contradiction,equiv,true 0.02s,true 0.13s ✓,true 0.03s ✓
+01_axioms,commute,equiv,true 0.02s,true 0.14s ✓,true 0.03s ✓
+01_axioms,no_commute,equiv,false 0.02s,false 0.13s ✓,false 0.03s ✓
+01_axioms,all_cases,equiv,true 0.02s,true 0.13s ✓,true 0.03s ✓
+01_axioms,union_idem,equiv,true 0.02s,true 0.13s ✓,true 0.03s ✓
+01_axioms,filter_incl,incl,true 0.02s,true 0.13s ✓,true 0.03s ✓
+01_axioms,not_incl,incl,false 0.02s,false 0.14s ✓,false 0.03s ✓
+01_axioms,unfold,equiv,true 0.04s,true 0.76s ✓,true 0.24s ✓
+01_axioms,star_finite,equiv,true 0.03s,true 0.63s ✓,true 0.18s ✓
+01_axioms,star_too_short,equiv,false 0.02s,false 1.05s ✓,false 0.28s ✓
+02_line,through,member,true 0.02s,true 0.13s ✓,true 0.04s ✓
+02_line,back,member,false 0.02s,false 0.14s ✓,false 0.04s ✓
+02_line,middle,member,false 0.02s,false 0.13s ✓,false 0.05s ✓
+02_line,summary,equiv,true 0.02s,true 0.54s ✓,true 0.19s ✓
+02_line,summary_wrong,equiv,false 0.02s,false 0.13s ✓,false 0.18s ✓
+02_line,isolation,incl,true 0.02s,true 0.13s ✓,true 0.03s ✓
+03_toggle,reaches_1,member,true 0.02s,true 0.13s ✓,true 0.07s ✓
+03_toggle,reaches_5,member,false 0.02s,false 0.13s ✓,false 0.04s ✓
+03_toggle,stays_7,member,true 0.03s,true 0.13s ✓,true 0.03s ✓
+03_toggle,star,equiv,true 0.02s,true 0.64s ✓,true 0.22s ✓
+04_ring,round,member,true 0.03s,true 0.13s ✓,true 0.05s ✓
+04_ring,all_reached,equiv,true 0.02s,true 0.63s ✓,true 0.44s ✓
+04_ring,cut,member,false 0.02s,false 0.13s ✓,false 0.05s ✓
+04_ring,with_filter,equiv,true 0.02s,true 0.33s ✓,true 0.17s ✓
+04_ring,never_4,incl,true 0.02s,true 0.13s ✓,true 0.04s ✓
+05_arpanet,utah_to_uscb,member,true 0.02s,true 0.13s ✓,timeout 20.04s
+05_arpanet,uscb_isolated_from_sri,incl,false 0.03s,false 0.44s ✓,false 0.05s ✓
+05_arpanet,blocked,incl,true 0.02s,true 0.23s ✓,true 0.05s ✓
+05_arpanet,still_ok,member,true 0.02s,true 0.13s ✓,timeout 20.03s

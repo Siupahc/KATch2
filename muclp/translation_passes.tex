@@ -1,0 +1,167 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=25mm]{geometry}
+\usepackage{amsmath,amssymb,booktabs}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5pt}
+\newcommand{\pass}[2]{\subsection*{#1\quad #2}}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\begin{document}
+\begin{center}
+{\LARGE Making the generic translation smaller}\\[5pt]
+{\large NetKAT synthesis to pfwCSP, continued}
+\end{center}
+
+The previous note turns a term into a relation $T(e)(p,p')$. The question here is
+which parts of that relation we can compute before calling PCSat. We use the
+same hospital, with the extra anti-spoofing constraint: the hole $X$ runs on
+switch $S$ and can change only the port. A packet has four integer fields
+$p=(sw,pt,dst,typ)$.
+
+\section*{What does PCSat have to find?}
+Write $e=\mathit{pol}[X];\mathit{link}$ for one hop. Two constraints use $e^*$.
+For safety (N2), we ask whether FTP can reach $M$. The star is on the left, so
+the translation introduces $St(p,p')$ containing every reachable pair.
+For delivery (N1), the star is on the right: each required pair must belong
+to $D(p,p')$, and $D$ must justify how to reach $p'$. Its recursive clause is
+\[
+\begin{aligned}
+D(p,p')\ \Longrightarrow\quad &p=p'\quad\lor\\
+ &\exists q,r.\ \mathit{pol}[X](p,q)\land\mathit{link}(q,r)\land D(r,p')
+                       \land W((p,p'),(r,p')) .
+\end{aligned}
+\]
+Here $q$ is the packet leaving the switch and $r$ the packet arriving at the
+next switch. $W$ is an unknown well-founded relation: it rules out justifying
+delivery by looping forever.
+
+So there are four unknown relations: $X$, $St$ and $D$ take eight integers each,
+and $W$ takes sixteen. There is a separate cost: the two packets under
+$\exists$ stand for eight integer witnesses. Skolemisation can turn these
+choices into additional functions for PCSat to synthesise.
+
+\pass{1}{Substitute the known parts of a hop}
+Consider $pt:=2\,;\,a$. The generic rule for sequence introduces a packet:
+\[
+  \exists q.\ q=p[pt:=2]\land T(a)(q,p')
+  \quad\longrightarrow\quad T(a)(p[pt:=2],p').
+\]
+The assignment already gives all four components of $q$. For a choice
+between known updates, we substitute once per branch and take their
+disjunction. A final test simply checks the output packet.
+
+\textbf{Effect.} Each such substitution removes a packet variable (four
+integers here). The four unknown relations keep their signatures. In the
+hospital, this pass alone still leaves the $\exists q,r$ above: the switch
+policy contains $X$. This is the starting point called \code{generic} in the
+benchmark.
+
+\newpage
+\pass{2}{Give the hole only the arguments it needs}
+Start with the explicit upper bound on $X$. On the hospital it gives
+$sw=sw'=S$, $dst'=dst$ and $typ'=typ$. First, \code{hole_frame} makes these
+facts available wherever the hole is used. Then \code{hole_arity} changes
+the unknown PCSat must learn:
+\[
+\begin{aligned}
+X(p,p')\quad\longleftrightarrow\quad
+ &sw=S\land sw'=S\land dst'=dst\land typ'=typ\\
+ &{}\land H(pt,dst,typ,pt').
+\end{aligned}
+\]
+\textbf{Effect.} One unknown remains, with arity $8\to4$. Destination and type
+stay as inputs: even though $X$ must preserve them, it may use them to choose
+the output port. The displayed guards reconstruct the original relation.
+
+There is also a context option, \code{hole_context}. If every operational use
+of $X$ is followed by known code, inspect what that code accepts. At $S$, the
+next cable accepts only output ports 1 through 4. Other ports cannot contribute
+a hop, so the search can focus on those four. An output that every successor
+overwrites without reading can also be a candidate for preservation, subject
+to the hole's own bounds. On this example the port restriction narrows the
+\emph{values} for $pt'$; it does not remove the port argument.
+
+\pass{3}{Remember where the packet is now}
+For N2, an ingress packet is used to start the run. The final safety check
+looks only at the packet that arrives. Introduce $R(p')$ for packets reachable
+from ingress. The three obligations become
+\[
+\begin{aligned}
+\mathit{In}(p)&\Rightarrow R(p),\\
+R(p)\land T(e)(p,r)&\Rightarrow R(r),\\
+R(r)\land r.sw=M\land r.typ=\mathrm{FTP}&\Rightarrow\bot .
+\end{aligned}
+\]
+\textbf{Effect.} $St(p,p')$ becomes $R(p')$: one invariant, arity $8\to4$.
+If a goal compares an initial field with the final packet, the projection has
+to keep that initial field too.
+
+\pass{4}{Remove the remaining choices under an existential}
+Return to the clause for $D$. Consider the cable from port 2 of $S$ to port 1
+of $M$. In that branch, the cable fixes the endpoints and the hole preserves
+the payload. Thus $q=(S,2,dst,typ)$ and $r=(M,1,dst,typ)$. Substitute both
+packets in $X$, $D$ and $W$. Repeat for the other cables; the alternatives
+are joined by $\lor$, so PCSat can still choose a route.
+
+\textbf{Effect.} On this input, eight existential integers become zero.
+$D$ and $W$ still have arities 8 and 16. In general the pass splits finite
+cases up to a size limit and keeps any witness it cannot eliminate. In the
+hand-written hospital experiment, all four runs with this elimination alone
+still timed out at 300 seconds.
+
+\newpage
+\section*{Two ways to simplify the delivery proof}
+Passes 5 and 6 address the same recursive clause. They are alternatives.
+The preset \code{bfs} uses the first; \code{all} uses the second.
+
+\pass{5}{Supply a distance instead of learning an order}
+Compute distances on the extracted switch graph. Replace the call to $W$ by
+the known test $\mathrm{dist}(r.sw,p'.sw)<\mathrm{dist}(p.sw,p'.sw)$, using
+finite distances. PCSat still has to justify the next hop through $D$.
+
+\textbf{Effect.} One 16-argument unknown disappears. The trade-off is concrete:
+a route from $S$ to $W$ via $I$ first moves farther from $W$. If the policy
+requires that detour, a shortest-distance rank can miss a valid solution.
+A route found with this rank still makes genuine progress.
+
+\pass{6}{Write out the possible paths}
+For fixed $dst$ and $typ$, a hospital state is just (switch, port).
+Ingress reaches $S$ on port 1. To deliver to $W$, it can leave $S$ on port 3,
+or leave on port 4 for $I$, return to $S$ on port 4, then leave on port 3.
+Returning via $G$ repeats $(S,1)$; a second trip via $I$ repeats $(S,4)$.
+Deleting those cycles leaves the same endpoints and the same payload.
+
+Write $H(i,d,t,j)$ for permission to send an incoming packet on port $i$
+with destination $d$ and type $t$ out on port $j$. The entire delivery
+obligation for $W$ is now
+\[
+  \forall t.\quad H(1,W,t,3)\ \lor\ \bigl(H(1,W,t,4)\land H(4,W,t,3)\bigr).
+\]
+For $M$, use exit port 2 and require delivery only for non-FTP traffic.
+The disjunction retains the detour. More generally the compiler keeps the
+unchanged fields symbolic and enumerates paths over the changing fields.
+If it cannot finish this compilation within its limits, it keeps the
+recursive encoding.
+
+\textbf{Effect.} Both $D$ (8 arguments) and $W$ (16) disappear for this star.
+PCSat chooses $H$ and proves safety with $R$; it has no recursive delivery
+proof to synthesise. The price is paid in translation: a larger graph can
+have many simple paths.
+
+\medskip
+\textbf{What actually reaches PCSat?}\par These counts come from running the translator
+on \code{hospital_nospoof.nksynth}. Subscripts give arities; the last column
+counts explicitly existential integer variables in the emitted SMT.
+\begin{center}
+\begin{tabular}{@{}llll@{}}
+\toprule
+Preset & Unknowns & Clauses & Existential integers\\
+\midrule
+\code{generic}  & $X_8,St_8,D_8,W_{16}$ & 11 & 8\\
+\code{noexists} & $X_8,St_8,D_8,W_{16}$ & 11 & 0\\
+\code{proj}     & $X_8,R_4,D_8,W_{16}$  & 11 & 0\\
+\code{bfs}      & $H_4,R_4,D_8$         & 7 & 0\\
+\code{all}      & $H_4,R_4$             & 7 & 0\\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{document}

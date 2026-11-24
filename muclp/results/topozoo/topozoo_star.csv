@@ -1,0 +1,17 @@
+instance,tool,preset,config,rep,verdict,ms,check
+"Arpanet196912_star (V=4,E=4)",katch2,-,default,1,sat,113,
+"Renam_star (V=5,E=4)",katch2,-,default,1,sat,102,
+"Mren_star (V=6,E=5)",katch2,-,default,1,sat,90,
+"Epoch_star (V=6,E=7)",katch2,-,default,1,sat,90,
+"Arpanet196912_star (V=4,E=4)",pcsat,generic,pcsat_tbq_nopre_sol,1,timeout,45238,
+"Arpanet196912_star (V=4,E=4)",pcsat,paths,pcsat_tbq_nopre_sol,1,sat,710,OK [--check:valid]
+"Arpanet196912_star (V=4,E=4)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,121,OK [--check:valid]
+"Renam_star (V=5,E=4)",pcsat,generic,pcsat_tbq_nopre_sol,1,timeout,43862,
+"Renam_star (V=5,E=4)",pcsat,paths,pcsat_tbq_nopre_sol,1,sat,811,OK [skip-check:Domain of `h1` has 1048576 > 262144 tuples; use Z3 model verification instead]
+"Renam_star (V=5,E=4)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,116,OK [--check:valid]
+"Mren_star (V=6,E=5)",pcsat,generic,pcsat_tbq_nopre_sol,1,timeout,43887,
+"Mren_star (V=6,E=5)",pcsat,paths,pcsat_tbq_nopre_sol,1,sat,845,OK [skip-check:Domain of `h1` has 1048576 > 262144 tuples; use Z3 model verification instead]
+"Mren_star (V=6,E=5)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,121,OK [--check:valid]
+"Epoch_star (V=6,E=7)",pcsat,generic,pcsat_tbq_nopre_sol,1,timeout,42641,
+"Epoch_star (V=6,E=7)",pcsat,paths,pcsat_tbq_nopre_sol,1,sat,-342,OK [--check:valid]
+"Epoch_star (V=6,E=7)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,130,OK [--check:valid]

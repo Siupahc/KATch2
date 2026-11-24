@@ -1,0 +1,5 @@
+instance,tool,preset,config,rep,verdict,ms,check
+hospital_nospoof,katch2,-,default,1,sat,17,
+"Arpanet196912_star (V=4,E=4)",katch2,-,default,1,sat,3,
+hospital_nospoof,pcsat,bfs,pcsat_tbq_sol,1,timeout,25244,
+"Arpanet196912_star (V=4,E=4)",pcsat,bfs,pcsat_tbq_sol,1,timeout,25264,

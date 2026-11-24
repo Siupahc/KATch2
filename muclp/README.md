@@ -4,7 +4,7 @@ Experiments: check NetKAT properties with a **fixed-point logic** solver (μCLP,
 [CoAR](https://github.com/hiroshi-unno/coar) tools by Hiroshi Unno) instead of KATch2, and
 compare the two.
 
-For now: **membership** and **equivalence / inclusion**, **without `dup`** and **without holes**.
+The μCLP experiments cover **membership** and **equivalence / inclusion** for programs without `dup` or holes. For synthesis with holes, see the [pfwCSP translation results](#hospital-synthesis-with-pcsat).
 
 | file | role |
 |---|---|
@@ -15,7 +15,45 @@ For now: **membership** and **equivalence / inclusion**, **without `dup`** and *
 | `bugs/` | wrong solver answers, reduced and reproducible (to report) |
 | `out/` | generated files + `results.csv` (ignored by git) |
 
+## Hospital synthesis with PCSat
+
+With four packet fields, a relation on an input and an output packet takes eight integer arguments. The table shows what the [translator](nksynth_to_pcsat.py) emits for the [hospital with anti-spoofing](hospital/hospital_nospoof.nksynth). The number in parentheses is each unknown's arity.
+
+| Preset | Hole | Safety invariant | Delivery relation | Progress order | Clauses | Existential integers |
+|---|---|---|---|---|---:|---:|
+| `generic` | X (8) | St (8) | D (8) | W (16) | 11 | 8 |
+| `noexists` | X (8) | St (8) | D (8) | W (16) | 11 | 0 |
+| `proj` | X (8) | R (4) | D (8) | W (16) | 11 | 0 |
+| `bfs` | H (4) | R (4) | D (8) | — | 7 | 0 |
+| `all` | H (4) | R (4) | — | — | 7 | 0 |
+
+Substituting cable endpoints removes the eight existential integers in the delivery step. Projection lets the safety invariant remember just the current packet. The reduced hole takes the input port, destination, traffic type and output port. The last two presets use different delivery proofs: `bfs` supplies a distance rank, while `all` compiles the possible paths and removes both D and W. See the [three-page note](translation_passes.pdf), its [LaTeX source](translation_passes.tex) and the [hospital timings](hospital/README.md#eliminating-existential-packet-witnesses).
+
 ---
+
+## Running a Topology Zoo campaign
+
+From the repository root in WSL (Bash), with CoAR built in `~/coar`, the release `nksynth` binary and Python with pandas and Matplotlib:
+
+```bash
+out=muclp/out/topozoo/current
+python3 muclp/compare_topozoo.py experiments/gml/{Abilene,Esnet,Colt,Cogentco}.gml \
+  --katch2 ~/katch2-target/release/nksynth --coar ~/coar --presets all --configs pcsat_tbq_sol \
+  --num-bad 1 --num-good 3 --reps 3 --jobs 1 --timeout 35 --out-dir "$out" --csv "$out/results.csv"
+cd "$out"
+python3 - <<'PY'
+import pandas as pd
+import matplotlib.pyplot as plt
+r = pd.read_csv("results.csv")
+print(r.groupby(["tool", "verdict"]).size())
+times = r[r.verdict.isin(["sat", "unsat"])].pivot_table(index="instance", columns="tool", values="ms", aggfunc="median", sort=False)
+print(times)
+times.plot.bar(logy=True, rot=15, ylabel="Median solve time (ms)", xlabel="Topology")
+plt.savefig("solve_times.png", bbox_inches="tight", dpi=180)
+PY
+```
+
+`all` enables the optimized translation. The CSV records translation time separately in `translation_ms`. The solver cutoff is 35 seconds per run. KATch2 runs once per topology. To regenerate the original multi-suite figures from the archived campaign CSVs, run `python3 muclp/plot_topozoo.py` from the repository root.
 
 ## 1. Reminder: what a (dup-free) NetKAT program means
 

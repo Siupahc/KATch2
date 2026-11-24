@@ -1,0 +1,688 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{stmaryrd}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue,
+  citecolor=black
+}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+\newtheorem{example}[theorem]{Example}
+
+\newcommand{\Pkt}{\mathsf{Pkt}}
+\newcommand{\Field}{\mathsf{Field}}
+\newcommand{\Val}{\mathsf{Val}}
+\newcommand{\Hole}{\mathsf{Hole}}
+\newcommand{\Bool}{\{\mathsf{true},\mathsf{false}\}}
+\newcommand{\Csem}[1]{\mathcal{C}\llbracket #1 \rrbracket}
+\newcommand{\Bsem}[1]{\mathcal{B}\llbracket #1 \rrbracket}
+\newcommand{\Tpos}[1]{\mathcal{T}^{+}\!\left(#1\right)}
+\newcommand{\Tneg}[1]{\mathcal{T}^{-}\!\left(#1\right)}
+\newcommand{\Tplain}[1]{\mathcal{T}\!\left(#1\right)}
+\newcommand{\fix}{\mathit{fix}}
+\newcommand{\Sol}{\mathsf{Sol}}
+
+\title{Optimising the Generic NetKAT-to-pfwCSP Translation}
+\author{Louis Chapuis}
+\date{Notes, Nov.\ 2026}
+
+\begin{document}
+\maketitle
+
+\noindent
+Follow-up to \emph{NetKAT synthesis to pfwCSP: the generic translation}. There, we defined a
+syntax-directed translation from dup-free NetKAT synthesis problems into predicate constraint
+satisfaction problems with well-foundedness ($\text{pfwCSP}$), solved by CoAR's \textsc{PCSat}.
+As expected, running \textsc{PCSat} directly on the raw generic clauses times out even on the
+five-node hospital network: predicates range over pairs of packets $(p,p')$, existential
+intermediate packets trigger Skolemisation, and stars on the right-hand side of $\le$ couple a
+recursive relation $\mathbf{D}_e$ with a $4m$-ary free well-founded relation $\mathbf{W}_e$.
+
+This note formalises the six optimisation passes implemented in \texttt{nksynth\_to\_pcsat.py},
+using a denotational semantics in the style of CS-462, and proves for each pass whether it is
+\emph{sound} and \emph{complete} (equisatisfiable, with explicit reconstruction of the NetKAT hole).
+
+% =============================================================================
+\section{Denotational Semantics of Dup-Free NetKAT with Holes}
+% =============================================================================
+
+\subsection{Packets, Syntax, and Denotations}
+
+Let $\Field = \{\mathsf{f}_1, \dots, \mathsf{f}_m\}$ be a finite set of packet fields. A
+\emph{packet} is a store mapping each field to an integer value:
+\[
+  \Pkt \;\triangleq\; \Field \to \Val_{\mathsf{f}}
+\]
+where $\Val_{\mathsf{f}} \subseteq \mathbb{Z}$ is the domain of field $\mathsf{f}$ (in standard
+$w_{\mathsf{f}}$-bit NetKAT, $\Val_{\mathsf{f}} = \{0, \dots, 2^{w_{\mathsf{f}}} - 1\}$; in the
+unbounded integer relaxation, $\Val_{\mathsf{f}} = \mathbb{Z}$). As for IMP stores, we write
+$p[\mathsf{f} \mapsto v]$ for the packet identical to $p$ except that
+$(p[\mathsf{f} \mapsto v])(\mathsf{f}) = v$.
+
+Let $\Hole = \{X_1, \dots, X_n\}$ be a finite set of synthesis holes. The syntax of tests $a$ and
+dup-free NetKAT expressions $e$ is given by:
+\begin{align*}
+  a &\;::=\; 0 \;\mid\; 1 \;\mid\; \mathsf{f} = v \;\mid\; \neg a \;\mid\; a_1 + a_2 \;\mid\; a_1 ; a_2 \\
+  e &\;::=\; a \;\mid\; \top \;\mid\; \mathsf{f} := v \;\mid\; X \;\mid\; e_1 + e_2 \;\mid\; e_1 ; e_2 \;\mid\; e^*
+\end{align*}
+
+A \emph{hole valuation} $\eta : \Hole \to \mathcal{P}(\Pkt \times \Pkt)$ assigns a binary packet
+relation to every hole $X \in \Hole$. First, tests denote predicates over single packets,
+$\Bsem{a} \subseteq \Pkt \times \Bool$:
+\begin{align*}
+  \Bsem{0} &= \{(p, \mathsf{false}) \mid p \in \Pkt\} &
+  \Bsem{1} &= \{(p, \mathsf{true}) \mid p \in \Pkt\} \\
+  \Bsem{\mathsf{f} = v} &= \{(p, \mathsf{true}) \mid p(\mathsf{f}) = v\}
+    \cup \{(p, \mathsf{false}) \mid p(\mathsf{f}) \neq v\} &
+  \Bsem{\neg a} &= \{(p, \neg b) \mid (p, b) \in \Bsem{a}\}
+\end{align*}
+with $\Bsem{a_1 + a_2}$ and $\Bsem{a_1 ; a_2}$ defined by boolean disjunction and conjunction
+respectively. For brevity, we write $p \models a$ when $(p, \mathsf{true}) \in \Bsem{a}$.
+
+Second, under a hole valuation $\eta$, each expression $e$ denotes an input-output relation on
+packets, $\Csem{e}_\eta \subseteq \Pkt \times \Pkt$:
+\begin{align*}
+  \Csem{a}_\eta &= \{(p, p) \mid p \models a\} \\
+  \Csem{\top}_\eta &= \Pkt \times \Pkt \\
+  \Csem{\mathsf{f} := v}_\eta &= \{(p, p[\mathsf{f} \mapsto v]) \mid p \in \Pkt\} \\
+  \Csem{X}_\eta &= \eta(X) \\
+  \Csem{e_1 + e_2}_\eta &= \Csem{e_1}_\eta \cup \Csem{e_2}_\eta \\
+  \Csem{e_1 ; e_2}_\eta &= \Csem{e_2}_\eta \circ \Csem{e_1}_\eta
+    \;=\; \{(p, p') \mid \exists q \in \Pkt.\; (p, q) \in \Csem{e_1}_\eta \land (q, p') \in \Csem{e_2}_\eta\} \\
+  \Csem{e^*}_\eta &= \fix(F_{e,\eta}) \;=\; \bigcup_{i \ge 0} F_{e,\eta}^i(\emptyset)
+\end{align*}
+where $F_{e,\eta} : \mathcal{P}(\Pkt \times \Pkt) \to \mathcal{P}(\Pkt \times \Pkt)$ is the
+Scott-continuous functional
+\[
+  F_{e,\eta}(R) \;\triangleq\; \{(p, p) \mid p \in \Pkt\} \;\cup\;
+  \{(p, p') \mid \exists q \in \Pkt.\; (p, q) \in \Csem{e}_\eta \land (q, p') \in R\}.
+\]
+By Kleene's Fixpoint Theorem, $\fix(F_{e,\eta}) = \bigcup_{i \ge 0} F_{e,\eta}^i(\emptyset)$ is
+the least fixed point of $F_{e,\eta}$ with respect to $\subseteq$, and $(p, p') \in \Csem{e^*}_\eta$
+holds if and only if there exists $k \ge 0$ and a finite sequence of packets
+$p = p_0, p_1, \dots, p_k = p'$ such that $(p_r, p_{r+1}) \in \Csem{e}_\eta$ for all $0 \le r < k$.
+
+\begin{definition}[Synthesis Problem]
+A synthesis problem $\mathcal{P}$ is a finite set of inclusion constraints $\{e_i \le d_i\}_{i=1}^c$
+(an equality $e = d$ stands for $e \le d$ and $d \le e$). A hole valuation $\eta$ \emph{solves}
+$\mathcal{P}$, written $\eta \models \mathcal{P}$, iff
+\[
+  \forall i \in \{1, \dots, c\}.\; \Csem{e_i}_\eta \subseteq \Csem{d_i}_\eta.
+\]
+\end{definition}
+
+\subsection{Why \texttt{dup} in Topology Zoo Specifications Reduces to Dup-Free Synthesis}
+
+In full NetKAT with $\mathsf{dup}$, expressions denote sets of non-empty packet traces
+$\langle p_0, p_1, \dots, p_k \rangle \in \Pkt^+$, where $\mathsf{dup}$ records the current packet
+$\langle p \rangle \mapsto \langle p, p \rangle$ and coalesced sequencing joins traces matching at
+their boundary packet:
+$U \diamond V \triangleq \{\langle p_0, \dots, p_i, \dots, p_{i+j} \rangle \mid
+\langle p_0, \dots, p_i \rangle \in U \land \langle p_i, \dots, p_{i+j} \rangle \in V\}$.
+When holes remain \emph{dup-free} (as in \texttt{nksynth --no-full}, where $\eta(X)$ only contains
+length-$2$ input-output pairs $\langle p, p' \rangle$, or equivalently length-$1$ SPP steps prior to
+$\mathsf{dup}$), the two constraint shapes generated by \texttt{experiments/experiment.py} reduce
+exact-equivalently to dup-free relational constraints:
+
+\begin{proposition}[Exactness of \texttt{dup} Elimination on Topology Zoo Shapes]
+Let $\eta$ be any dup-free hole valuation, and let $L_0, \dots, L_k$ and $R_0, \dots, R_k$ be
+dup-free expressions.
+\begin{enumerate}[label=(\arabic*)]
+  \item \textbf{Upper bounds against $0$ (bad paths):} For any expression $e$ (possibly containing
+        $\mathsf{dup}$), let $\mathsf{erase}(e)$ be obtained by replacing every $\mathsf{dup}$ with $1$.
+        Then the trace denotation of $e$ under $\eta$ is empty iff $\Csem{\mathsf{erase}(e)}_\eta = \emptyset$.
+  \item \textbf{Synchronised $\mathsf{dup}$-chains (good paths):} The trace inclusion
+        \[
+          L_0 ; \mathsf{dup} ; L_1 ; \dots ; \mathsf{dup} ; L_k \;\le\;
+          R_0 ; \mathsf{dup} ; R_1 ; \dots ; \mathsf{dup} ; R_k
+        \]
+        holds under $\eta$ if and only if
+        \[
+          \forall p_0, p_1, \dots, p_{k+1} \in \Pkt.\quad
+          \Bigl(\bigwedge_{j=0}^{k} (p_j, p_{j+1}) \in \Csem{L_j}_\eta\Bigr) \;\implies\;
+          \Bigl(\bigwedge_{j=0}^{k} (p_j, p_{j+1}) \in \Csem{R_j}_\eta\Bigr).
+        \]
+\end{enumerate}
+\end{proposition}
+
+\begin{proof}
+For (1), the projection $\pi(\langle p_0, \dots, p_r \rangle) \triangleq (p_0, p_r)$ is a Kleene
+algebra homomorphism mapping $\mathsf{dup}$ to $\Csem{1}_\eta$, and for any set of traces $T$,
+$T = \emptyset \iff \pi(T) = \emptyset$.
+
+For (2), since every $L_j$ and $R_j$ is dup-free, any trace emitted by
+$L_0 ; \mathsf{dup} ; \dots ; \mathsf{dup} ; L_k$ has exactly $k$ recorded intermediate packets
+$(p_1, \dots, p_k)$ together with initial packet $p_0$ and final packet $p_{k+1}$, and belongs to
+the left-hand trace set iff $(p_j, p_{j+1}) \in \Csem{L_j}_\eta$ for every $0 \le j \le k$. The same
+characterisation holds on the right-hand side for $R_0, \dots, R_k$. Because the intermediate
+packets $p_1, \dots, p_k$ are exposed in the trace itself, set inclusion on traces coincides with
+pointwise implication over all tuples $(p_0, \dots, p_{k+1})$.
+\end{proof}
+
+% =============================================================================
+\section{Recap: The Generic Translation and Pass Correctness}
+% =============================================================================
+
+In the generic translation, every hole $X$ becomes a $2m$-ary ordinary unknown predicate
+$\mathbf{X}(p, p')$. Every inclusion $e_1 \le e_2$ generates the main constraint
+\[
+  \forall p, p'.\; \Tpos{e_1}(p, p') \;\Rightarrow\; \Tneg{e_2}(p, p')
+\]
+together with side clauses for star occurrences:
+\begin{itemize}
+  \item \textbf{Left-hand star ($\Tpos{e^*}(p, p') = \mathbf{S}_e(p, p')$):} fresh ordinary unknown
+        $\mathbf{S}_e$ constrained by
+        \begin{align}
+          p' = p &\;\Rightarrow\; \mathbf{S}_e(p, p') \tag{$\mathbf{S}$-init} \\
+          \mathbf{S}_e(p, r) \land \Tpos{e}(r, p') &\;\Rightarrow\; \mathbf{S}_e(p, p') \tag{$\mathbf{S}$-step}
+        \end{align}
+  \item \textbf{Right-hand star ($\Tneg{e^*}(p, p') = \mathbf{D}_e(p, p')$):} fresh ordinary unknown
+        $\mathbf{D}_e$ and fresh $4m$-ary well-founded unknown $\mathbf{W}_e$, constrained by
+        \begin{equation}
+          \mathbf{D}_e(p, p') \;\Rightarrow\; p' = p \;\lor\;
+          \exists r.\; \Tneg{e}(p, r) \land \mathbf{D}_e(r, p') \land \mathbf{W}_e\bigl((p, p'), (r, p')\bigr).
+          \tag{$\mathbf{D}$-step}
+        \end{equation}
+\end{itemize}
+All other operators translate identically under $\mathcal{T}^+$ and $\mathcal{T}^-$:
+$\mathcal{T}^\pm(a)(p,p') = (p \models a \land p' = p)$,
+$\mathcal{T}^\pm(\mathsf{f} := v)(p,p') = (p' = p[\mathsf{f} \mapsto v])$,
+$\mathcal{T}^\pm(e_1 + e_2) = \mathcal{T}^\pm(e_1) \lor \mathcal{T}^\pm(e_2)$, and
+$\mathcal{T}^\pm(e_1 ; e_2)(p,p') = \exists q.\; \mathcal{T}^\pm(e_1)(p,q) \land \mathcal{T}^\pm(e_2)(q,p')$.
+
+\begin{definition}[Soundness and Completeness of a Pass]
+Let $\Phi$ and $\Phi'$ be two $\text{pfwCSP}$ instances with associated hole reconstruction maps
+$\rho, \rho'$ turning a solver model $M$ into a hole valuation $\eta = \rho(M)$. A transformation
+$\Phi \leadsto \Phi'$ is:
+\begin{itemize}
+  \item \textbf{sound} if for every model $M' \models \Phi'$, there exists a model $M \models \Phi$
+        such that $\rho(M)$ and $\rho'(M')$ induce the same network behaviour (in particular,
+        $\rho'(M') \models \mathcal{P}$);
+  \item \textbf{complete} if whenever $\Phi$ is satisfiable, $\Phi'$ is also satisfiable.
+\end{itemize}
+A pass that is both sound and complete is \emph{exact} (equisatisfiable).
+\end{definition}
+
+% =============================================================================
+\section{Pass 1: Symbolic Composition of Star-Free, Hole-Free Subterms}
+% =============================================================================
+
+\paragraph{Problem.}
+In the literal translation, every `;` introduces an existential packet $\exists q$ ($m$ integer
+variables). In a link term $\mathsf{sw} = a ; \mathsf{pt} = i ; \mathsf{sw} := b ; \mathsf{pt} := j$,
+three intermediate packets are introduced even though the output packet is a deterministic function
+of the input.
+
+\paragraph{Transformation (\texttt{subst\_seq}).}
+Every hole-free, star-free expression $e$ is compiled into a finite \emph{Guarded-Assignment Normal
+Form} (SPP-NF),
+\[
+  \mathsf{nf}(e) \;=\; \bigl\{(g_1, \Sigma_1), \dots, (g_k, \Sigma_k)\bigr\},
+\]
+where each guard $g_i(p) \triangleq \bigwedge_{\mathsf{f} \in \Field} p(\mathsf{f}) \in M_{i,\mathsf{f}}$
+restricts each field to a subset $M_{i,\mathsf{f}} \subseteq \Val_{\mathsf{f}}$, and each effect
+$\Sigma_{i,\mathsf{f}}$ is either $\mathsf{keep}$ ($p'(\mathsf{f}) = p(\mathsf{f})$) or a non-empty
+target set $N_{i,\mathsf{f}} \subseteq \Val_{\mathsf{f}}$ ($p'(\mathsf{f}) \in N_{i,\mathsf{f}}$, a
+singleton $\{c\}$ for deterministic assignments $\mathsf{f} := c$). Two adjacent SPP-NFs compose in
+closed form without quantifiers, and two contextual eliminations apply inside arbitrary terms:
+\begin{enumerate}[label=(\arabic*)]
+  \item \textbf{Deterministic prefix:} If $e_1$ is hole-free, star-free, and every branch of
+        $\mathsf{nf}(e_1)$ is deterministic ($p' = \sigma_i(p)$), then
+        \[
+          \mathcal{T}^\pm(e_1 ; e_2)(p, p') \;\leadsto\;
+          \bigvee_{i=1}^k \Bigl(g_i(p) \land \mathcal{T}^\pm(e_2)\bigl(\sigma_i(p), p'\bigr)\Bigr).
+        \]
+  \item \textbf{Test suffix:} If $b$ is a test, then
+        \[
+          \mathcal{T}^\pm(e_1 ; b)(p, p') \;\leadsto\;
+          \mathcal{T}^\pm(e_1)(p, p') \land (p' \models b).
+        \]
+\end{enumerate}
+
+\begin{proposition}
+Pass 1 preserves logical equivalence of formulas ($\equiv$), and is therefore sound and complete.
+\end{proposition}
+
+\begin{proof}
+We calculate directly by first-order equivalence and the one-point rule
+$(\exists q.\; q = t \land \varphi(q)) \equiv \varphi(t)$:
+\begin{align*}
+  \mathcal{T}^\pm(e_1 ; e_2)(p, p')
+  &\;\equiv\; \exists q.\; \Bigl(\bigvee_{i=1}^k g_i(p) \land q = \sigma_i(p)\Bigr)
+              \land \mathcal{T}^\pm(e_2)(q, p') \\
+  &\;\equiv\; \bigvee_{i=1}^k \Bigl(g_i(p) \land \exists q.\; q = \sigma_i(p)
+              \land \mathcal{T}^\pm(e_2)(q, p')\Bigr) \\
+  &\;\equiv\; \bigvee_{i=1}^k \Bigl(g_i(p) \land \mathcal{T}^\pm(e_2)\bigl(\sigma_i(p), p'\bigr)\Bigr).
+\end{align*}
+Similarly, for a test $b$,
+$\exists q.\; \mathcal{T}^\pm(e_1)(p, q) \land (q \models b \land p' = q)
+\equiv \mathcal{T}^\pm(e_1)(p, p') \land (p' \models b)$.
+\end{proof}
+
+\begin{remark}[Interval compression]
+Over $\mathbb{Z}$, a finite membership test $x \in \{a, a+1, \dots, b\}$ with $b - a \ge 2$ is
+emitted as the conjunction $a \le x \land x \le b$ rather than a $(b - a + 1)$-way disjunction. On
+Topology Zoo routing tables, grouping rules by $(\mathsf{loc}, \text{next-hop})$ and compressing
+contiguous destination IDs shrinks \texttt{Pol ; Topo} by an order of magnitude.
+\end{remark}
+
+% =============================================================================
+\section{Pass 2: Hole Shape, Arity Reduction, and Contextual Pruning}
+% =============================================================================
+
+\subsection{Explicit Upper Bounds $X \le U$ (\texttt{hole\_frame}, \texttt{hole\_arity})}
+
+\paragraph{Problem.}
+In the generic encoding, a hole $X$ has $2m$ integer arguments. Even when a specification includes
+shape constraints such as $X \le (\mathsf{sw} = S ; \top ; \mathsf{sw} := S)$ and anti-spoofing
+($\mathsf{dst}' = \mathsf{dst} \land \mathsf{typ}' = \mathsf{typ}$), those facts are only stated as
+separate Horn clauses $\mathbf{X}(p, p') \Rightarrow \dots$ rather than built into call sites and
+predicate arity.
+
+\paragraph{Transformation.}
+Given any constraint $X \le U$ with $U$ hole-free and star-free, let $\mathsf{nf}(U)$ be its normal
+form. From $\mathsf{nf}(U)$ we extract:
+\begin{itemize}
+  \item $I_{\mathsf{fixed}} = \{(\mathsf{f}, c) \mid \forall (p,p') \in \Csem{U}.\; p(\mathsf{f}) = c\}$,
+        the input fields fixed to a constant;
+  \item $O_{\mathsf{fixed}} = \{(\mathsf{f}, c') \mid \forall (p,p') \in \Csem{U}.\; p'(\mathsf{f}) = c'\}$,
+        the output fields fixed to a constant;
+  \item $F_{\mathsf{pres}} = \{\mathsf{f} \in \Field \mid \forall (p,p') \in \Csem{U}.\; p'(\mathsf{f}) = p(\mathsf{f})\}$,
+        the preserved (\emph{frame}) fields.
+\end{itemize}
+Let $\mathsf{R} = \Field \setminus \mathrm{dom}(I_{\mathsf{fixed}})$ be the read fields and
+$\mathsf{W} = \Field \setminus (\mathrm{dom}(O_{\mathsf{fixed}}) \cup F_{\mathsf{pres}})$ be the
+writable fields. We replace $\mathbf{X}$ of arity $2m$ by $\widehat{\mathbf{X}}$ of arity
+$|\mathsf{R}| + |\mathsf{W}|$, rewriting every atom $\mathbf{X}(p, p')$ into
+\[
+  \varphi_{\mathsf{frame}}(p, p') \;\land\; \widehat{\mathbf{X}}\bigl(p|_{\mathsf{R}},\, p'|_{\mathsf{W}}\bigr),
+\]
+where $\varphi_{\mathsf{frame}}(p, p')$ asserts the constant and frame equalities together with the
+per-field domain masks of $U$. When $\Csem{U}$ is the exact Cartesian product of those masks and
+equalities, the upper-bound clause $X \le U$ becomes a tautology and is removed.
+
+\begin{proposition}
+Arity reduction via $X \le U$ is sound and complete, with hole reconstruction
+$\eta(X) = \{(p, p') \mid \varphi_{\mathsf{frame}}(p, p') \land \widehat{\mathbf{X}}(p|_{\mathsf{R}}, p'|_{\mathsf{W}})\}$.
+\end{proposition}
+
+\begin{proof}
+Immediate: any relation $R \subseteq \Csem{U}$ satisfies $\varphi_{\mathsf{frame}}(p, p')$ for all
+$(p, p') \in R$, hence depends only on $(p|_{\mathsf{R}}, p'|_{\mathsf{W}})$ on the support of
+$\varphi_{\mathsf{frame}}$, establishing a bijection between relations $R \subseteq \Csem{U}$ and
+subsets of $\Val_{\mathsf{R}} \times \Val_{\mathsf{W}}$ restricted to $\Csem{U}$.
+\end{proof}
+
+\subsection{Contextual Dead-Output Specialisation (\texttt{hole\_context})}
+
+\paragraph{Problem.}
+In Topology Zoo benchmarks generated by \texttt{experiment.py}, there is \emph{no} explicit shape
+constraint $h_1 \le U$: the hole $h_1$ only appears inside $\mathsf{hop} \triangleq h_1 ; \mathsf{pol} ; \mathsf{topo}$.
+Yet every rule of $\mathsf{pol}$ has the form
+$(\mathsf{loc} = u ; \mathsf{dst} = d ; \mathsf{dir} = 0 ; \mathsf{port} := p_{\mathrm{out}} ; \mathsf{dir} := 1)$:
+$\mathsf{pol}$ drops any packet with $\mathsf{dir} \neq 0$, never reads $\mathsf{port}$, and
+unconditionally overwrites $\mathsf{port}$. Leaving $q(\mathsf{port})$ unconstrained in
+$h_1(p, q)$ creates a spurious existential witness $\exists q_{\mathsf{port}}$ on every good-path hop.
+
+\begin{lemma}[Contextual Dead-Output Pruning]
+\label{lem:dead-output}
+Suppose a hole $X$ occurs in $\mathcal{P}$ exclusively in sequential subterms of the form $X ; E_j$
+($1 \le j \le s$), where each $E_j$ is hole-free and star-free. Suppose further that:
+\begin{enumerate}[label=(\arabic*)]
+  \item \textbf{Filtered field:} for every $j$ and every $(q, q') \in \Csem{E_j}$, we have
+        $q(\mathsf{f}) \in M_{\mathsf{f}}$;
+  \item \textbf{Oblivious (dead) field:} field $\mathsf{g}$ ($M_{\mathsf{g}} = \Val_{\mathsf{g}}$)
+        is never read and always overwritten by every $E_j$, i.e., for all $j$, all $q, q' \in \Pkt$,
+        and all $v \in \Val_{\mathsf{g}}$,
+        $(q, q') \in \Csem{E_j} \iff (q[\mathsf{g} \mapsto v], q') \in \Csem{E_j}$.
+\end{enumerate}
+Then restricting $\eta(X)$ to satisfy $q(\mathsf{f}) \in M_{\mathsf{f}}$ and
+$q(\mathsf{g}) = p(\mathsf{g})$ for all $(p, q) \in \eta(X)$ is \textbf{sound and complete};
+moreover, any restricted solution $\eta'$ satisfies $\eta' \models \mathcal{P}$ directly without
+post-processing.
+\end{lemma}
+
+\begin{proof}
+\textbf{Soundness.} Any restricted valuation $\eta'$ is in particular an unrestricted valuation, so
+$\eta' \models \mathcal{P}$ trivially means $\eta'$ is a valid solution to $\mathcal{P}$.
+
+\textbf{Completeness.} Suppose $\eta_0 \models \mathcal{P}$. Define $\eta_1$ on $X$ by
+\[
+  \eta_1(X) \;\triangleq\; \bigl\{(p, q) \in \Pkt \times \Pkt \;\big|\;
+    q(\mathsf{f}) \in M_{\mathsf{f}} \;\land\; q(\mathsf{g}) = p(\mathsf{g}) \;\land\;
+    \exists v \in \Val_{\mathsf{g}}.\; (p, q[\mathsf{g} \mapsto v]) \in \eta_0(X)\bigr\}.
+\]
+We claim $\Csem{X ; E_j}_{\eta_1} = \Csem{X ; E_j}_{\eta_0}$ for every $j \in \{1, \dots, s\}$:
+\begin{itemize}
+  \item[$(\subseteq)$] Let $(p, q') \in \Csem{X ; E_j}_{\eta_1}$. There exists $q$ with
+    $(p, q) \in \eta_1(X)$ and $(q, q') \in \Csem{E_j}$. By definition of $\eta_1(X)$, there exists
+    $v \in \Val_{\mathsf{g}}$ such that $(p, q[\mathsf{g} \mapsto v]) \in \eta_0(X)$. By obliviousness
+    of $E_j$ to $\mathsf{g}$, $(q[\mathsf{g} \mapsto v], q') \in \Csem{E_j}$, hence
+    $(p, q') \in \Csem{X ; E_j}_{\eta_0}$.
+  \item[$(\supseteq)$] Let $(p, q') \in \Csem{X ; E_j}_{\eta_0}$. There exists $\tilde{q}$ with
+    $(p, \tilde{q}) \in \eta_0(X)$ and $(\tilde{q}, q') \in \Csem{E_j}$. By (1),
+    $\tilde{q}(\mathsf{f}) \in M_{\mathsf{f}}$. Set $q \triangleq \tilde{q}[\mathsf{g} \mapsto p(\mathsf{g})]$
+    and $v \triangleq \tilde{q}(\mathsf{g})$. Since $\mathsf{g} \neq \mathsf{f}$ (or $M_{\mathsf{g}} = \Val_{\mathsf{g}}$),
+    $q(\mathsf{f}) \in M_{\mathsf{f}}$, $q(\mathsf{g}) = p(\mathsf{g})$, and
+    $q[\mathsf{g} \mapsto v] = \tilde{q}$, so $(p, q) \in \eta_1(X)$. By obliviousness of $E_j$,
+    $(q, q') \in \Csem{E_j}$, yielding $(p, q') \in \Csem{X ; E_j}_{\eta_1}$.
+\end{itemize}
+Since $X$ only ever occurs inside $X ; E_j$, structural induction gives
+$\Csem{d}_{\eta_1} = \Csem{d}_{\eta_0}$ for every constraint term $d$ in $\mathcal{P}$, so
+$\eta_1 \models \mathcal{P}$.
+\end{proof}
+
+% =============================================================================
+\section{Pass 3: Start-Packet Projection for Left-Hand Stars}
+% =============================================================================
+
+\paragraph{Problem.}
+For a safety constraint $\mathsf{in} ; e^* ; \mathsf{bad} \le 0$ (such as N2 on the hospital or bad
+paths on Topology Zoo), $\mathbf{S}_e(p, p')$ tracks both the entry packet $p$ and the current
+packet $p'$, giving arity $2m$. Yet the goal clause
+$\varphi_{\mathsf{pre}}(p) \land \mathbf{S}_e(p, p') \land \varphi_{\mathsf{post}}(p') \Rightarrow \bot$
+never compares $p$ with $p'$.
+
+\paragraph{Transformation (\texttt{project\_st}).}
+Consider a left-star predicate $\mathbf{S}_e(p, p')$ used in a goal clause of the form
+\[
+  \forall p, p'.\; \varphi_{\mathsf{pre}}(p) \land \mathbf{S}_e(p, p') \land
+  \varphi_{\mathsf{post}}(p|_K, p') \;\Rightarrow\; \psi(p|_K, p')
+\]
+where $K \subsetneq \Field$ is the subset of fields of $p$ occurring free in $\varphi_{\mathsf{post}}$
+or $\psi$, and $\varphi_{\mathsf{pre}}(p)$ contains no unknown predicates. We replace $\mathbf{S}_e$
+(arity $2m$) by a fresh ordinary unknown $\mathbf{R}_e(p|_K, p')$ of arity $|K| + m$ (when
+$K = \emptyset$, $\mathbf{R}_e(p')$ is unary of arity $m$), with clauses:
+\begin{align}
+  \forall p.\; \varphi_{\mathsf{pre}}(p) &\;\Rightarrow\; \mathbf{R}_e(p|_K, p) \tag{$\mathbf{R}$-init} \\
+  \forall u_K, r, p'.\; \mathbf{R}_e(u_K, r) \land \Tpos{e}(r, p') &\;\Rightarrow\; \mathbf{R}_e(u_K, p') \tag{$\mathbf{R}$-step} \\
+  \forall u_K, p'.\; \mathbf{R}_e(u_K, p') \land \varphi_{\mathsf{post}}(u_K, p') &\;\Rightarrow\; \psi(u_K, p'). \tag{$\mathbf{R}$-goal}
+\end{align}
+(If $\mathbf{S}_e$ was shared across $B$ distinct goal clauses, introducing one $\mathbf{R}_{e,b}$
+per goal clause applies the exact same reduction independently to each $b \in \{1, \dots, B\}$.)
+
+\begin{theorem}[Exactness of Start-Packet Projection]
+Pass 3 is sound and complete for arbitrary relations $\Tpos{e}$ (with no frame assumptions on holes).
+\end{theorem}
+
+\begin{proof}
+Fix any interpretation of the remaining unknowns (in particular $\Tpos{e}$).
+\begin{itemize}
+  \item[$(\Leftarrow)$] (\emph{Soundness.}) Suppose $\mathbf{R}_e$ satisfies $(\mathbf{R}\text{-init})$,
+    $(\mathbf{R}\text{-step})$, and $(\mathbf{R}\text{-goal})$. Define
+    \[
+      \mathbf{S}_e(p, p') \;\triangleq\; \bigl(\varphi_{\mathsf{pre}}(p) \;\Rightarrow\; \mathbf{R}_e(p|_K, p')\bigr).
+    \]
+    We verify the three clauses of $\mathbf{S}_e$:
+    \begin{enumerate}[label=(\arabic*)]
+      \item $(\mathbf{S}\text{-init})$: For $p' = p$, $\varphi_{\mathsf{pre}}(p) \Rightarrow \mathbf{R}_e(p|_K, p)$
+            is literally $(\mathbf{R}\text{-init})$.
+      \item $(\mathbf{S}\text{-step})$: Assume $\mathbf{S}_e(p, r)$ and $\Tpos{e}(r, p')$. To show
+            $\mathbf{S}_e(p, p')$, assume $\varphi_{\mathsf{pre}}(p)$. Then $\mathbf{S}_e(p, r)$ yields
+            $\mathbf{R}_e(p|_K, r)$, which together with $\Tpos{e}(r, p')$ and $(\mathbf{R}\text{-step})$
+            at $u_K = p|_K$ yields $\mathbf{R}_e(p|_K, p')$.
+      \item \emph{Goal}: Assume $\varphi_{\mathsf{pre}}(p) \land \mathbf{S}_e(p, p') \land \varphi_{\mathsf{post}}(p|_K, p')$.
+            Modus ponens gives $\mathbf{R}_e(p|_K, p')$, so $(\mathbf{R}\text{-goal})$ at $u_K = p|_K$
+            concludes $\psi(p|_K, p')$.
+    \end{enumerate}
+
+  \item[$(\Rightarrow)$] (\emph{Completeness.}) Suppose $\mathbf{S}_e$ satisfies $(\mathbf{S}\text{-init})$,
+    $(\mathbf{S}\text{-step})$, and the original goal clause. Define
+    \[
+      \mathbf{R}_e(u_K, p') \;\triangleq\; \exists p \in \Pkt.\;
+      p|_K = u_K \land \varphi_{\mathsf{pre}}(p) \land \mathbf{S}_e(p, p').
+    \]
+    \begin{enumerate}[label=(\arabic*)]
+      \item $(\mathbf{R}\text{-init})$: Given $\varphi_{\mathsf{pre}}(p)$, $(\mathbf{S}\text{-init})$
+            gives $\mathbf{S}_e(p, p)$, witnessing $\mathbf{R}_e(p|_K, p)$.
+      \item $(\mathbf{R}\text{-step})$: If $p$ witnesses $\mathbf{R}_e(u_K, r)$ and $\Tpos{e}(r, p')$
+            holds, then $(\mathbf{S}\text{-step})$ gives $\mathbf{S}_e(p, p')$, so the same $p$
+            witnesses $\mathbf{R}_e(u_K, p')$.
+      \item $(\mathbf{R}\text{-goal})$: If $p$ witnesses $\mathbf{R}_e(u_K, p')$ and
+            $\varphi_{\mathsf{post}}(u_K, p')$ holds, substituting $u_K = p|_K$ triggers the original
+            goal clause on $(p, p')$, concluding $\psi(u_K, p')$. \qedhere
+    \end{enumerate}
+\end{itemize}
+\end{proof}
+
+% =============================================================================
+\section{Pass 4: Eliminating Existential Packet Witnesses on the Right}
+% =============================================================================
+
+\paragraph{Problem.}
+Whenever $\exists q.\; \psi(p, q, p')$ stands on the right-hand side of $\Rightarrow$ (either inside
+$(\mathbf{D}\text{-step})$ or in an unfolded hop $h_1 ; (\mathsf{pol} ; \mathsf{topo})$ of a good
+path), \textsc{PCSat} Skolemises each existentially quantified integer variable into an unknown
+functional predicate.
+
+\paragraph{Transformation (\texttt{elim\_exists}).}
+For any positive formula $\exists \vec{q}.\; \psi$, we distribute $\land$ over those disjunctions
+$\lor$ inside $\psi$ that constrain variables in $\vec{q}$, push $\exists \vec{q}$ across $\lor$,
+and apply equality elimination:
+\[
+  \exists \vec{q}.\; \Bigl(\bigvee_{j=1}^s \psi_j\Bigr) \;\equiv\; \bigvee_{j=1}^s \exists \vec{q}.\; \psi_j,
+  \qquad
+  \exists q_{\mathsf{f}}.\; \bigl(q_{\mathsf{f}} = t \land \chi\bigr) \;\equiv\; \chi[q_{\mathsf{f}} \mapsto t]
+  \quad (q_{\mathsf{f}} \notin \mathrm{fv}(t)).
+\]
+Finally, any remaining existential variable bounded by a small concrete interval
+$a \le q_{\mathsf{f}} \le b$ ($0 \le b - a \le B_{\max}$) is expanded into $\bigvee_{v=a}^b \chi[q_{\mathsf{f}} \mapsto v]$.
+
+\begin{proposition}
+Pass 4 preserves first-order logical equivalence over $\mathbb{Z}$ and is therefore sound and complete.
+\end{proposition}
+
+\paragraph{Effect on Topology Zoo vs.\ Right-Hand Stars.}
+\begin{itemize}
+  \item On \textbf{unfolded Topology Zoo} (\texttt{experiment.py}), a good-path step requires
+        $\exists q.\; \mathbf{h}_1(\pi_j, q) \land \mathsf{PolTopo}(q, \pi_{j+1})$ for concrete packets
+        $\pi_j, \pi_{j+1}$. Because each ingress port has a unique physical link, $\mathsf{PolTopo}(q, \pi_{j+1})$
+        uniquely determines $q(\mathsf{loc})$ and $q(\mathsf{dst})$, while Lemma~\ref{lem:dead-output}
+        fixes $q(\mathsf{dir}) = 0$ and $q(\mathsf{port}) = \pi_j(\mathsf{port})$. Pass 4 eliminates
+        \emph{all four} existential variables, collapsing the hop to a single ground unit clause
+        $\mathbf{h}_1(\pi_j, \pi_j)$ and turning the entire synthesis instance into pure Horn clauses!
+  \item On \textbf{right-hand stars} (such as N1 on the hospital), Pass 4 eliminates all eight
+        existential integers $(q, r)$ by enumerating the outgoing cables of $S$ (producing
+        \texttt{hospital\_generic\_noexists.smt2}), yet \textsc{PCSat} still times out: the bottleneck
+        there is not Skolemisation alone, but the non-Horn head disjunction coupling $\mathbf{D}_e$
+        with the $16$-ary well-founded relation $\mathbf{W}_e$.
+\end{itemize}
+
+% =============================================================================
+\section{Pass 5: Fixing $\mathbf{W}_e$ via Topology BFS Rank (\texttt{bfs\_wf})}
+% =============================================================================
+
+\paragraph{Transformation.}
+Let $G = (V_{\mathsf{sw}}, E_{\mathsf{sw}})$ be the directed switch graph induced by transitions of
+$\mathsf{topo}$, and let $\mathsf{dist}_G(u, d) \in \mathbb{N} \cup \{\infty\}$ be the shortest-path
+hop distance from $u$ to $d$. Pass 5 substitutes $\mathbf{W}_e\bigl((p, p'), (r, p')\bigr)$ with
+the concrete formula
+\[
+  W_{\mathrm{BFS}}\bigl((p, p'), (r, p')\bigr) \;\triangleq\;
+  0 \le \mathsf{dist}_G\bigl(r(\mathsf{sw}), p'(\mathsf{sw})\bigr)
+  < \mathsf{dist}_G\bigl(p(\mathsf{sw}), p'(\mathsf{sw})\bigr),
+\]
+and removes the `declare-wfp` declaration of $\mathbf{W}_e$.
+
+\begin{proposition}[Soundness and Incompleteness of Pass 5]
+Pass 5 is \textbf{sound}, because $<$ on $\mathbb{N}$ is well-founded, so $W_{\mathrm{BFS}}$ is a
+particular valid instantiation of $\mathbf{W}_e$. However, Pass 5 is \textbf{incomplete} in general.
+\end{proposition}
+
+\begin{proof}[Counterexample to completeness]
+Suppose the hospital specification additionally requires all traffic for $M$ to traverse the
+inspection middlebox $I$ (setting a header bit $\mathsf{inspected} := 1$ at $I$). Along the unique
+valid path $G \to S \to I \to S \to M$, the step $S \to I$ moves from $\mathsf{dist}_G(S, M) = 1$ to
+$\mathsf{dist}_G(I, M) = 2 > 1$, violating $W_{\mathrm{BFS}}$ and making the instance unsatisfiable
+even though a valid NetKAT policy exists.
+\end{proof}
+
+% =============================================================================
+\section{Pass 6: Exact Simple-Path Compilation for Right-Hand Stars}
+% =============================================================================
+
+Pass 6 is the transformation that unlocked \textsc{PCSat} on both the hospital and star-based
+Topology Zoo benchmarks, while avoiding the incompleteness of Pass 5.
+
+\subsection{Invariant vs.\ Active Field Partition and Symbolic State Graph}
+
+Consider a right-hand star $e^*$ (represented by $\mathbf{D}_e$ and $\mathbf{W}_e$). Using the SPP
+normal forms of Pass 1 and the hole shapes of Pass 2, we partition $\Field = \mathsf{F}_{\mathrm{act}} \uplus \mathsf{F}_{\mathrm{inv}}$:
+\begin{itemize}
+  \item $\mathsf{F}_{\mathrm{inv}}$ (\emph{invariant header fields}): fields preserved by every
+        branch of $e$, i.e., for every hole valuation $\eta$ respecting the inferred hole shapes and
+        every $(p, q) \in \Csem{e}_\eta$, $q|_{\mathsf{F}_{\mathrm{inv}}} = p|_{\mathsf{F}_{\mathrm{inv}}}$.
+        (On the hospital with anti-spoofing, $\mathsf{F}_{\mathrm{inv}} = \{\mathsf{dst}, \mathsf{typ}\}$;
+        on Topology Zoo with a filter hole, $\mathsf{F}_{\mathrm{inv}} = \{\mathsf{dst}\}$.)
+  \item $\mathsf{F}_{\mathrm{act}} = \Field \setminus \mathsf{F}_{\mathrm{inv}}$ (\emph{active
+        location fields}), assuming $\Val_{\mathrm{act}} \triangleq \prod_{\mathsf{f} \in \mathsf{F}_{\mathrm{act}}} \Val_{\mathsf{f}}$
+        is finite. Each packet decomposes uniquely as $p = (u, \vec{z})$ with $u \in \Val_{\mathrm{act}}$
+        and $\vec{z} \in \Val_{\mathrm{inv}}$.
+\end{itemize}
+
+Keeping $\vec{z}$ as symbolic integer variables, for every pair of concrete active states
+$u, v \in \Val_{\mathrm{act}}$, Pass 4 yields a quantifier-free positive formula
+$\Delta_{u \to v}(\vec{z})$ (built from hole applications $\mathbf{X}(\dots)$, $\land$, $\lor$, and
+arithmetic tests on $\vec{z}$) such that for every $\eta$ respecting the hole shapes:
+\[
+  \bigl((u, \vec{z}), (v, \vec{z})\bigr) \in \Csem{e}_\eta
+  \;\iff\;
+  \eta \models \Delta_{u \to v}(\vec{z}).
+\]
+
+\begin{definition}[Simple Paths]
+A \emph{simple path} from $u_{\mathrm{in}} \in \Val_{\mathrm{act}}$ to $u_{\mathrm{out}} \in \Val_{\mathrm{act}}$
+is a sequence $\pi = (u_0, u_1, \dots, u_k)$ ($k \ge 0$) such that $u_0 = u_{\mathrm{in}}$,
+$u_k = u_{\mathrm{out}}$, $\Delta_{u_r \to u_{r+1}} \not\equiv \bot$ for all $0 \le r < k$, and
+$u_i \neq u_j$ for all $0 \le i < j \le k$. We write $\mathsf{SimplePaths}(u_{\mathrm{in}}, u_{\mathrm{out}})$
+for the (necessarily finite) set of all simple paths from $u_{\mathrm{in}}$ to $u_{\mathrm{out}}$.
+\end{definition}
+
+\begin{theorem}[Cycle Deletion / Simple-Path Exactness]
+\label{thm:simple-paths}
+Let $\eta$ be any hole valuation (possibly \emph{non-deterministic}) respecting the hole frame on
+$\mathsf{F}_{\mathrm{inv}}$. For all $u_{\mathrm{in}}, u_{\mathrm{out}} \in \Val_{\mathrm{act}}$ and
+all $\vec{z} \in \Val_{\mathrm{inv}}$:
+\[
+  \bigl((u_{\mathrm{in}}, \vec{z}), (u_{\mathrm{out}}, \vec{z})\bigr) \in \Csem{e^*}_\eta
+  \;\iff\;
+  \eta \models \bigvee_{\pi = (u_0,\dots,u_k) \in \mathsf{SimplePaths}(u_{\mathrm{in}}, u_{\mathrm{out}})}
+  \;\bigwedge_{r=0}^{k-1} \Delta_{u_r \to u_{r+1}}(\vec{z}).
+\]
+\end{theorem}
+
+\begin{proof}
+Recall from Section 1 that $\Csem{e^*}_\eta = \bigcup_{i \ge 0} F_{e,\eta}^i(\emptyset)$.
+\begin{itemize}
+  \item[$(\Leftarrow)$] (\emph{Soundness.}) Suppose $\pi = (u_0, \dots, u_k) \in \mathsf{SimplePaths}(u_{\mathrm{in}}, u_{\mathrm{out}})$
+    satisfies $\eta \models \Delta_{u_r \to u_{r+1}}(\vec{z})$ for each $0 \le r < k$. Then
+    $((u_r, \vec{z}), (u_{r+1}, \vec{z})) \in \Csem{e}_\eta$ for all $0 \le r < k$. By backward
+    induction on $r = k, k-1, \dots, 0$, we obtain
+    $((u_r, \vec{z}), (u_k, \vec{z})) \in F_{e,\eta}^{k-r + 1}(\emptyset) \subseteq \Csem{e^*}_\eta$;
+    at $r = 0$, $((u_{\mathrm{in}}, \vec{z}), (u_{\mathrm{out}}, \vec{z})) \in \Csem{e^*}_\eta$.
+
+  \item[$(\Rightarrow)$] (\emph{Completeness.}) Suppose
+    $((u_{\mathrm{in}}, \vec{z}), (u_{\mathrm{out}}, \vec{z})) \in \Csem{e^*}_\eta = \bigcup_{i \ge 0} F_{e,\eta}^i(\emptyset)$.
+    Then there exists a walk of minimal length $k \ge 0$,
+    \[
+      p_0 = (u_{\mathrm{in}}, \vec{z}),\; p_1,\; \dots,\; p_k = (u_{\mathrm{out}}, \vec{z}),
+    \]
+    such that $(p_r, p_{r+1}) \in \Csem{e}_\eta$ for all $0 \le r < k$. Since every field in
+    $\mathsf{F}_{\mathrm{inv}}$ is preserved by $\Csem{e}_\eta$, induction on $r$ gives
+    $p_r = (u_r, \vec{z})$ with the \emph{exact same} $\vec{z}$ for every $0 \le r \le k$.
+
+    We claim that $u_0, \dots, u_k$ are pairwise distinct. Suppose for contradiction that
+    $u_i = u_j$ for some $0 \le i < j \le k$. Because $p_i = (u_i, \vec{z})$ and
+    $p_j = (u_j, \vec{z})$ share the same header $\vec{z}$, we have the packet equality $p_i = p_j$!
+    Splicing out the sub-walk $p_{i+1}, \dots, p_j$ produces a strictly shorter sequence
+    \[
+      p_0, \dots, p_i, p_{j+1}, \dots, p_k
+    \]
+    of length $k - (j - i) < k$ in which every consecutive pair still belongs to $\Csem{e}_\eta$
+    (since $(p_i, p_{j+1}) = (p_j, p_{j+1}) \in \Csem{e}_\eta$), contradicting the minimality of $k$.
+
+    Hence $\pi = (u_0, \dots, u_k)$ has no repeated active states, so
+    $\pi \in \mathsf{SimplePaths}(u_{\mathrm{in}}, u_{\mathrm{out}})$, and each step satisfies
+    $\eta \models \Delta_{u_r \to u_{r+1}}(\vec{z})$. \qedhere
+\end{itemize}
+\end{proof}
+
+\subsection{Clause Rewriting, Guard-Conditioned Pruning, and Absorption}
+
+Given a goal clause $\varphi_{\mathsf{spec}}(u_{\mathrm{in}}, u_{\mathrm{out}}, \vec{z}) \Rightarrow
+\mathbf{D}_e\bigl((u_{\mathrm{in}}, \vec{z}), (u_{\mathrm{out}}, \vec{z})\bigr)$, Pass 6 replaces
+$\mathbf{D}_e(\dots)$ by the simple-path formula of Theorem~\ref{thm:simple-paths}, applying two
+equivalence-preserving simplifications during enumeration:
+\begin{enumerate}[label=(\arabic*)]
+  \item \textbf{Guard-conditioned edge pruning:} Under the premise $\varphi_{\mathsf{guard}}(\vec{z})$,
+        any edge $(u \to v)$ satisfying $\varphi_{\mathsf{guard}}(\vec{z}) \land \Delta_{u \to v}(\vec{z}) \equiv \bot$
+        is pruned during the DFS. On Topology Zoo, where $\varphi_{\mathsf{guard}}$ fixes
+        $\mathsf{dst} = d$, this prunes all routing branches for other destinations $d' \neq d$
+        before path enumeration, preventing combinatorial blow-up on 25-node graphs.
+  \item \textbf{Boolean absorption:} Treating each path conjunction as its set of atomic conjuncts
+        $A(\pi)$, if $A(\pi_1) \subseteq A(\pi_2)$ then
+        $\bigl(\bigwedge A(\pi_1)\bigr) \lor \bigl(\bigwedge A(\pi_2)\bigr) \equiv \bigwedge A(\pi_1)$,
+        so $\pi_2$ is discarded.
+\end{enumerate}
+Once every occurrence of $\mathbf{D}_e$ has been compiled, both $\mathbf{D}_e$, the well-founded
+unknown $\mathbf{W}_e$, and $(\mathbf{D}\text{-step})$ are deleted from the $\text{pfwCSP}$ instance.
+
+\begin{example}[Derivation on the Hospital Network]
+On \texttt{hospital\_nospoof.nksynth}, $\mathsf{F}_{\mathrm{act}} = \{\mathsf{sw}, \mathsf{pt}\}$
+and $\mathsf{F}_{\mathrm{inv}} = \{\mathsf{dst}, \mathsf{typ}\}$. From ingress $u_{\mathrm{in}} = (G, 1)$:
+\begin{itemize}
+  \item $\Delta_{(G,1) \to (S,1)} = \top$ and $\Delta_{(I,1) \to (S,4)} = \top$;
+  \item from $(S, i)$ ($i \in \{1, 4\}$), the four cables give
+        $\Delta_{(S,i) \to (G,2)} = \widehat{\mathbf{X}}(i, \mathsf{dst}, \mathsf{typ}, 1)$
+        (followed deterministically by $(G,2) \to (S,1)$, which repeats $(S,1)$ and is never part
+        of a simple path from $(G,1)$!),
+        $\Delta_{(S,i) \to (M,1)} = \widehat{\mathbf{X}}(i, \mathsf{dst}, \mathsf{typ}, 2)$,
+        $\Delta_{(S,i) \to (W,1)} = \widehat{\mathbf{X}}(i, \mathsf{dst}, \mathsf{typ}, 3)$, and
+        $\Delta_{(S,i) \to (I,1)} = \widehat{\mathbf{X}}(i, \mathsf{dst}, \mathsf{typ}, 4)$;
+  \item $(M, 1)$ and $(W, 1)$ have no outgoing transitions.
+\end{itemize}
+Thus $\mathsf{SimplePaths}\bigl((G,1), (M,1)\bigr)$ contains \emph{exactly two} simple paths:
+$(G,1) \to (S,1) \to (M,1)$ and $(G,1) \to (S,1) \to (I,1) \to (S,4) \to (M,1)$. Together with
+Passes 2 and 3, the entire hospital synthesis problem reduces to two 4-ary ordinary predicates
+$\widehat{\mathbf{X}}$ and $\mathbf{R}$, solved by \textsc{PCSat} in $0.35\,\text{s}$ (down from
+$>300\,\text{s}$ on the generic encoding).
+\end{example}
+
+% =============================================================================
+\section{Summary of the Passes}
+% =============================================================================
+
+\begin{center}
+\begin{tabular}{@{}lllll@{}}
+\toprule
+Pass & Name in code & Eliminates / reduces & Sound & Complete \\
+\midrule
+1 & \texttt{subst\_seq}     & Intermediate packets in star/hole-free `;` & Yes & Yes \\
+2a & \texttt{hole\_arity}   & Hole arity $2m \to |\mathsf{R}|+|\mathsf{W}|$ from $X \le U$ & Yes & Yes \\
+2b & \texttt{hole\_context} & Dead / filtered hole outputs in $X ; E$ & Yes & Yes \\
+3 & \texttt{project\_st}    & Unused start fields in $\mathbf{S}_e(p,p') \to \mathbf{R}_e(p')$ & Yes & Yes \\
+4 & \texttt{elim\_exists}   & RHS $\exists \vec{q}$ (Skolem functions) via finite DNF & Yes & Yes \\
+5 & \texttt{bfs\_wf}        & Free $\mathbf{W}_e$ via shortest-path BFS rank & Yes & \textbf{No} (no detours) \\
+6 & \texttt{compile\_paths} & Both $\mathbf{D}_e$ and $\mathbf{W}_e$ via simple paths & Yes & Yes (finite $\mathsf{F}_{\mathrm{act}}$) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}

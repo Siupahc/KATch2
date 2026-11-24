@@ -84,6 +84,83 @@ Timeout on both files (300 s; no answer after ~25 min and 2.5 GB either). I firs
 Shorter runs (180 s) of `wf` / `bfs` with `pcsat_tb`, `tb_ar`, `tbq_ar`, `dt`, `dt_lazy`,
 `dt_svm`: all timeouts.
 
+### Candidate atoms on the generic encoding
+
+CoAR (`59017e6`) accepts SMT-LIB `set-info :candidates` declarations as optional
+qualifiers for individual unknowns. The generator below adds only these declarations.
+The generic clauses, anti-spoofing constraint, eight existential integers and free
+well-founded relation are identical across profiles.
+
+* `structural` offers field equalities and local tests on switches, ports and FTP.
+* `witness` offers one whole formula per unknown: a forwarding policy for `X`,
+  the FTP safety invariant for `St`, identity plus the required paths for `D`,
+  and the order G → S → {M, W} for `W_`. This is a diagnostic using the known
+  solution. With those definitions substituted, Z3 checked the negations of all
+  eight clauses as unsatisfiable. The order separately admits ranks 2, 1 and 0.
+* `projected` strengthens the same safety invariant to cover every ingress port
+  on G. Under TBQ, the qualifier trace shows that preprocessing removes the original
+  compound atom for `St`, while the projected atom and the progress atom survive.
+  The trace lists no declared qualifiers for `X` or `D` in either case.
+
+At 300 s, both TBQ and PPM/TBQ/AR timed out twice on each of the baseline,
+structural and witness inputs (12 concurrent runs). A single TBQ run with
+the projected hint also timed out. With preprocessing disabled, TBQ kept the
+original `St` hint, but both the baseline and witness profile still timed out
+(one run each). Thus none of the 10 hinted runs returned a model within budget.
+To reproduce under WSL,
+from this directory:
+
+```bash
+for p in structural witness projected; do
+  python3 hospital_candidates.py "$p" > "/tmp/hospital_$p.smt2"
+done
+python3 compare_hospital.py --only pcsat --smt2 hospital_generic.smt2 \
+  /tmp/hospital_structural.smt2 /tmp/hospital_witness.smt2 \
+  --configs pcsat_tbq_sol pcsat_ppm_tbq_ar_sol --reps 2 --jobs 12 \
+  --timeout 300 --csv candidates_results.csv
+python3 compare_hospital.py --only pcsat --smt2 hospital_generic.smt2 \
+  /tmp/hospital_witness.smt2 --configs pcsat_tbq_nopre_sol --reps 1 --jobs 2 \
+  --timeout 300 --csv candidates_nopre_results.csv
+python3 compare_hospital.py --only pcsat --smt2 /tmp/hospital_projected.smt2 \
+  --configs pcsat_tbq_sol --reps 1 --timeout 300 --csv candidates_projected_results.csv
+```
+
+### Eliminating existential packet witnesses
+
+In the generic lower-star clause, `q` and `r` account for eight existential
+integers. N3 keeps `X` on S, anti-spoofing preserves destination and type,
+and each outgoing port has one cable. Thus only the choice of port at S is
+free. Substituting the cable endpoints gives two equivalent rewrites of this
+clause. Z3 checked both directions for arbitrary relations satisfying the
+hole restrictions. All experiments used CoAR's PCSat with a 300 s limit.
+
+| Input | Lower-star encoding | Observed outcome |
+|---|---|---|
+| `hospital_generic.smt2` | Two packet witnesses, recursive D and free W_ | 4/4 timed out |
+| `hospital_generic_oneexists.smt2` | One port witness, next hop selected with ITEs | Four concurrent runs stopped manually at 44 s under memory pressure. A TBQ retry under a 4 GiB address-space limit exhausted memory at 230 s. |
+| `hospital_generic_noexists.smt2` | Six explicit transitions, recursive D and free W_ | 4/4 timed out |
+| `hospital_generic_factored.smt2` | Port cases factored through one ordinary predicate, Usable | Both runs killed under memory pressure (TBQ with and without preprocessing) |
+| `hospital_paths.smt2` | Exact simple paths for N1, ordinary X and recursive St for N2 | TBQ 2/2 SAT (8.6, 16.3 s), PPM/TBQ/AR 2/2 SAT (68.7, 116.2 s) |
+
+The last rewrite preserves the admissible policies for this hospital. For
+fixed destination and type, ingress reaches S on port 1. A trip through G
+returns to S:1, while a trip through I returns to S:4. M and W are terminal.
+Deleting repeated states leaves either a direct exit or one detour through I.
+Both cases are allowed. An independent graph traversal agreed with the path
+formula for both exits and all 256 subsets of the eight relevant forwarding
+choices. Three further TBQ runs in isolation all returned SAT (7.96, 8.17
+and 11.78 s). Z3 checked all seven returned policies against the two delivery
+requirements, the FTP prohibition, and the hole restrictions.
+
+The first experiments overlapped and experienced memory pressure. In
+`exists_results.csv` the four manually stopped runs are recorded as
+`error`. To run the successful variant by itself from this directory:
+
+```bash
+python3 compare_hospital.py --only pcsat --smt2 hospital_paths.smt2 \
+  --configs pcsat_tbq_sol --jobs 1 --reps 3 --csv exists_paths_serial.csv
+```
+
 ## Running
 
 ```bash

@@ -1,0 +1,7 @@
+suite,preset,rep,verdict,ms
+star,all,1,sat,4772
+star,all,2,sat,4440
+star,all,3,sat,4444
+std,all,1,sat,6960
+std,all,2,sat,7105
+std,all,3,sat,7332

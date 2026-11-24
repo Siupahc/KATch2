@@ -1,0 +1,22 @@
+instance,tool,preset,config,rep,verdict,ms,check,translation_ms
+"Geant2012_star (V=40,E=61)",katch2,-,default,1,sat,15,,
+"Geant2012_star (V=40,E=61)",pcsat,all,pcsat_tbq_sol,1,sat,342,OK,1069
+"Geant2012_star (V=40,E=61)",pcsat,paths,pcsat_tbq_sol,1,sat,7226,OK,990
+"Surfnet_star (V=50,E=73)",katch2,-,default,1,sat,19,,
+"Surfnet_star (V=50,E=73)",pcsat,all,pcsat_tbq_sol,1,sat,1847,OK,1683
+"Surfnet_star (V=50,E=73)",pcsat,paths,pcsat_tbq_sol,1,sat,9776,OK,1322
+"Esnet_star (V=68,E=92)",katch2,-,default,1,sat,28,,
+"Esnet_star (V=68,E=92)",pcsat,all,pcsat_tbq_sol,1,sat,705,OK,2679
+"Esnet_star (V=68,E=92)",pcsat,paths,pcsat_tbq_sol,1,timeout,35059,,2227
+"VtlWavenet2011_star (V=92,E=96)",katch2,-,default,1,sat,60,,
+"VtlWavenet2011_star (V=92,E=96)",pcsat,all,pcsat_tbq_sol,1,sat,7762,OK,9674
+"VtlWavenet2011_star (V=92,E=96)",pcsat,paths,pcsat_tbq_sol,1,timeout,35038,,10636
+"Interoute_star (V=110,E=158)",katch2,-,default,1,sat,84,,
+"Interoute_star (V=110,E=158)",pcsat,all,pcsat_tbq_sol,1,sat,24624,OK,10008
+"Interoute_star (V=110,E=158)",pcsat,paths,pcsat_tbq_sol,1,timeout,35028,,7434
+"Colt_star (V=153,E=191)",katch2,-,default,1,sat,170,,
+"Colt_star (V=153,E=191)",pcsat,all,pcsat_tbq_sol,1,sat,14107,OK,21594
+"Colt_star (V=153,E=191)",pcsat,paths,pcsat_tbq_sol,1,timeout,35025,,13790
+"Cogentco_star (V=197,E=245)",katch2,-,default,1,sat,272,,
+"Cogentco_star (V=197,E=245)",pcsat,all,pcsat_tbq_sol,1,sat,7341,OK,32224
+"Cogentco_star (V=197,E=245)",pcsat,paths,pcsat_tbq_sol,1,timeout,35742,,24097

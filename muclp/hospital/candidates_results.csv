@@ -1,0 +1,13 @@
+tool,file,config,rep,verdict,ms,solution
+pcsat,hospital_generic.smt2,pcsat_tbq_sol,1,timeout,306255,
+pcsat,hospital_generic.smt2,pcsat_tbq_sol,2,timeout,306252,
+pcsat,hospital_generic.smt2,pcsat_ppm_tbq_ar_sol,1,timeout,306288,
+pcsat,hospital_generic.smt2,pcsat_ppm_tbq_ar_sol,2,timeout,306293,
+pcsat,/tmp/hospital_structural.smt2,pcsat_tbq_sol,1,timeout,306254,
+pcsat,/tmp/hospital_structural.smt2,pcsat_tbq_sol,2,timeout,306251,
+pcsat,/tmp/hospital_structural.smt2,pcsat_ppm_tbq_ar_sol,1,timeout,306289,
+pcsat,/tmp/hospital_structural.smt2,pcsat_ppm_tbq_ar_sol,2,timeout,306291,
+pcsat,/tmp/hospital_witness.smt2,pcsat_tbq_sol,1,timeout,306247,
+pcsat,/tmp/hospital_witness.smt2,pcsat_tbq_sol,2,timeout,306247,
+pcsat,/tmp/hospital_witness.smt2,pcsat_ppm_tbq_ar_sol,1,timeout,306295,
+pcsat,/tmp/hospital_witness.smt2,pcsat_ppm_tbq_ar_sol,2,timeout,306291,

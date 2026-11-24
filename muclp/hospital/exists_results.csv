@@ -1,0 +1,13 @@
+tool,file,config,rep,verdict,ms,solution
+pcsat,hospital_generic.smt2,pcsat_tbq_sol,1,timeout,300103,
+pcsat,hospital_generic.smt2,pcsat_tbq_sol,2,timeout,300099,
+pcsat,hospital_generic.smt2,pcsat_ppm_tbq_ar_sol,1,timeout,300174,
+pcsat,hospital_generic.smt2,pcsat_ppm_tbq_ar_sol,2,timeout,300178,
+pcsat,hospital_generic_oneexists.smt2,pcsat_tbq_sol,1,error,44173,
+pcsat,hospital_generic_oneexists.smt2,pcsat_tbq_sol,2,error,44178,
+pcsat,hospital_generic_oneexists.smt2,pcsat_ppm_tbq_ar_sol,1,error,44169,
+pcsat,hospital_generic_oneexists.smt2,pcsat_ppm_tbq_ar_sol,2,error,44167,
+pcsat,hospital_generic_noexists.smt2,pcsat_tbq_sol,1,timeout,300175,
+pcsat,hospital_generic_noexists.smt2,pcsat_tbq_sol,2,timeout,300166,
+pcsat,hospital_generic_noexists.smt2,pcsat_ppm_tbq_ar_sol,1,timeout,300165,
+pcsat,hospital_generic_noexists.smt2,pcsat_ppm_tbq_ar_sol,2,timeout,300165,

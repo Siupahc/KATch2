@@ -1,0 +1,31 @@
+instance,tool,preset,config,rep,verdict,ms,check
+Basnet-unsat,katch2,-,default,1,unsat,111,
+"Arpanet196912 (V=4,E=4)",katch2,-,default,1,sat,105,
+"Renam (V=5,E=4)",katch2,-,default,1,sat,98,
+"Mren (V=6,E=5)",katch2,-,default,1,sat,87,
+"Epoch (V=6,E=7)",katch2,-,default,1,sat,80,
+"Basnet (V=7,E=6)",katch2,-,default,1,sat,83,
+Basnet-unsat,pcsat,generic,pcsat_tbq_sol,1,error,126,
+Basnet-unsat,pcsat,generic,pcsat_tbq_nopre_sol,1,timeout,45769,
+Basnet-unsat,pcsat,all,pcsat_tbq_sol,1,error,85,
+Basnet-unsat,pcsat,all,pcsat_tbq_nopre_sol,1,error,77,
+"Arpanet196912 (V=4,E=4)",pcsat,generic,pcsat_tbq_sol,1,sat,460,OK [--check:valid]
+"Arpanet196912 (V=4,E=4)",pcsat,generic,pcsat_tbq_nopre_sol,1,sat,896,OK [--check:valid]
+"Arpanet196912 (V=4,E=4)",pcsat,all,pcsat_tbq_sol,1,sat,123,OK [--check:valid]
+"Arpanet196912 (V=4,E=4)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,136,OK [--check:valid]
+"Renam (V=5,E=4)",pcsat,generic,pcsat_tbq_sol,1,sat,291,OK [skip-check:Domain of `h1` has 1048576 > 262144 tuples; use Z3 model verification instead]
+"Renam (V=5,E=4)",pcsat,generic,pcsat_tbq_nopre_sol,1,sat,1022,OK [skip-check:Domain of `h1` has 1048576 > 262144 tuples; use Z3 model verification instead]
+"Renam (V=5,E=4)",pcsat,all,pcsat_tbq_sol,1,sat,135,OK [--check:valid]
+"Renam (V=5,E=4)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,84,OK [--check:valid]
+"Mren (V=6,E=5)",pcsat,generic,pcsat_tbq_sol,1,sat,248,OK [skip-check:Domain of `h1` has 1048576 > 262144 tuples; use Z3 model verification instead]
+"Mren (V=6,E=5)",pcsat,generic,pcsat_tbq_nopre_sol,1,sat,877,OK [skip-check:Domain of `h1` has 1048576 > 262144 tuples; use Z3 model verification instead]
+"Mren (V=6,E=5)",pcsat,all,pcsat_tbq_sol,1,sat,137,OK [--check:valid]
+"Mren (V=6,E=5)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,131,OK [--check:valid]
+"Epoch (V=6,E=7)",pcsat,generic,pcsat_tbq_sol,1,sat,260,OK [--check:valid]
+"Epoch (V=6,E=7)",pcsat,generic,pcsat_tbq_nopre_sol,1,sat,1062,OK [--check:valid]
+"Epoch (V=6,E=7)",pcsat,all,pcsat_tbq_sol,1,sat,126,OK [--check:valid]
+"Epoch (V=6,E=7)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,137,OK [--check:valid]
+"Basnet (V=7,E=6)",pcsat,generic,pcsat_tbq_sol,1,sat,249,OK [skip-check:Domain of `h1` has 1048576 > 262144 tuples; use Z3 model verification instead]
+"Basnet (V=7,E=6)",pcsat,generic,pcsat_tbq_nopre_sol,1,sat,1596,OK [skip-check:Domain of `h1` has 1048576 > 262144 tuples; use Z3 model verification instead]
+"Basnet (V=7,E=6)",pcsat,all,pcsat_tbq_sol,1,sat,132,OK [--check:valid]
+"Basnet (V=7,E=6)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,146,OK [--check:valid]

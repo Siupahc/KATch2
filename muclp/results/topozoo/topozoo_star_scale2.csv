@@ -1,0 +1,21 @@
+instance,tool,preset,config,rep,verdict,ms,check
+"Heanet_star (V=7,E=13)",katch2,-,default,1,sat,2615,
+"Abilene_star (V=11,E=14)",katch2,-,default,1,sat,79,
+"Aarnet_star (V=19,E=24)",katch2,-,default,1,sat,87,
+"Karen_star (V=25,E=30)",katch2,-,default,1,sat,84,
+"Heanet_star (V=7,E=13)",pcsat,paths,pcsat_tbq_sol,1,sat,872,OK [skip-check:Domain of `h1` has 1048576 > 262144 tuples; use Z3 model verification instead]
+"Heanet_star (V=7,E=13)",pcsat,paths,pcsat_tbq_nopre_sol,1,sat,1146,OK [skip-check:Domain of `h1` has 1048576 > 262144 tuples; use Z3 model verification instead]
+"Heanet_star (V=7,E=13)",pcsat,all,pcsat_tbq_sol,1,sat,135,OK [--check:valid]
+"Heanet_star (V=7,E=13)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,138,OK [--check:valid]
+"Abilene_star (V=11,E=14)",pcsat,paths,pcsat_tbq_sol,1,sat,1000,OK [skip-check:Domain of `h1` has 4194304 > 262144 tuples; use Z3 model verification instead]
+"Abilene_star (V=11,E=14)",pcsat,paths,pcsat_tbq_nopre_sol,1,sat,1765,OK [skip-check:Domain of `h1` has 4194304 > 262144 tuples; use Z3 model verification instead]
+"Abilene_star (V=11,E=14)",pcsat,all,pcsat_tbq_sol,1,sat,171,OK [--check:valid]
+"Abilene_star (V=11,E=14)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,157,OK [--check:valid]
+"Aarnet_star (V=19,E=24)",pcsat,paths,pcsat_tbq_sol,1,sat,3064,OK [skip-check:Domain of `h1` has 268435456 > 262144 tuples; use Z3 model verification instead]
+"Aarnet_star (V=19,E=24)",pcsat,paths,pcsat_tbq_nopre_sol,1,sat,6644,OK [skip-check:Domain of `h1` has 268435456 > 262144 tuples; use Z3 model verification instead]
+"Aarnet_star (V=19,E=24)",pcsat,all,pcsat_tbq_sol,1,sat,257,OK [--check:valid]
+"Aarnet_star (V=19,E=24)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,159,OK [--check:valid]
+"Karen_star (V=25,E=30)",pcsat,paths,pcsat_tbq_sol,1,sat,2345,OK [skip-check:Domain of `h1` has 268435456 > 262144 tuples; use Z3 model verification instead]
+"Karen_star (V=25,E=30)",pcsat,paths,pcsat_tbq_nopre_sol,1,sat,15706,OK [skip-check:Domain of `h1` has 268435456 > 262144 tuples; use Z3 model verification instead]
+"Karen_star (V=25,E=30)",pcsat,all,pcsat_tbq_sol,1,sat,363,OK [--check:valid]
+"Karen_star (V=25,E=30)",pcsat,all,pcsat_tbq_nopre_sol,1,sat,983,OK [--check:valid]
